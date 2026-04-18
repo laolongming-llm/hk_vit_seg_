@@ -5,8 +5,8 @@ output_dir: "data/processed/vit_dataset/v3_11block8/manifests"
 
 patch_size: 512
 train_stride: 128
-eval_stride: 256
-buffer_m: 512
+eval_stride: 128
+buffer_m: 256
 label_nodata: 255
 
 valid_ratio_train: 0.20

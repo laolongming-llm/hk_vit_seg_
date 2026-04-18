@@ -93,6 +93,13 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def is_same_path(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except Exception:
+        return str(a) == str(b)
+
+
 def load_yaml_config(path_ref: str | None) -> dict[str, object]:
     if not path_ref:
         return {}
@@ -226,8 +233,9 @@ def copy_support_manifests(src_dir: Path, dst_dir: Path) -> None:
     ensure_dir(dst_dir)
     for name in ["split_summary.csv", "eco_split_geometry.csv", "eco_split_class_stats.csv"]:
         src = src_dir / name
-        if src.exists():
-            shutil.copy2(src, dst_dir / name)
+        dst = dst_dir / name
+        if src.exists() and (not is_same_path(src, dst)):
+            shutil.copy2(src, dst)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -304,7 +312,9 @@ def main() -> None:
     ensure_dir(labels_root)
     ensure_dir(manifests_out)
 
-    shutil.copy2(tiles_manifest, manifests_out / "tiles_manifest.csv")
+    tiles_manifest_out = manifests_out / "tiles_manifest.csv"
+    if not is_same_path(tiles_manifest, tiles_manifest_out):
+        shutil.copy2(tiles_manifest, tiles_manifest_out)
     if args.copy_manifests:
         copy_support_manifests(manifests_dir, manifests_out)
 
