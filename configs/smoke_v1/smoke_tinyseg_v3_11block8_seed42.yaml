@@ -1,0 +1,90 @@
+# 冒烟测试（smoke）配置：v3_11block8 数据集，seed=42
+# 用途：快速验证“数据可读 + 训练可跑 + checkpoint 可加载”。
+
+# 实验基础信息与复现相关设置
+experiment:
+  # 运行名（用于日志与输出目录标识）
+  run_name: "smoke_tinyseg_v3_11block8_seed42"
+  # 全局随机种子
+  seed: 42
+  # 是否启用确定性行为（提升复现性）
+  deterministic: true
+  # 是否开启 cudnn benchmark（固定输入尺寸时可提速；复现优先时通常关闭）
+  cudnn_benchmark: false
+
+# 数据集与样本文件路径
+data:
+  # 已导出的 v3 patch 数据根目录
+  dataset_root: "D:/learn/remoteSensingGeoscienceAnalysis/finalexam/codespace/hk_vit_seg_/data/processed/vit_dataset/v3_11block8"
+  # smoke 训练阶段实际读取的子集 manifest（由 01 脚本生成）
+  manifest_path: "D:/learn/remoteSensingGeoscienceAnalysis/finalexam/codespace/hk_vit_seg_/outputs/train_runs/smoke/v3_11block8_smoke_seed42/manifests/smoke_subset_manifest.csv"
+  # patch 目录约定
+  image_dirname: "images"
+  label_dirname: "labels"
+  image_suffix: ".tif"
+  label_suffix: ".tif"
+  # 3 通道影像，8 类分割，255 为忽略标签
+  in_channels: 3
+  num_classes: 8
+  ignore_index: 255
+
+# smoke 子集抽样配置（供 01_build_smoke_subset_manifest.py 使用）
+smoke:
+  # 抽样来源：使用 balanced 后的训练清单，提升小样本覆盖性
+  source_manifest_path: "D:/learn/remoteSensingGeoscienceAnalysis/finalexam/codespace/hk_vit_seg_/data/processed/vit_dataset/v3_11block8/manifests/tiles_manifest_balanced_train.csv"
+  # 抽样输出：供 02 训练与 03 load-check 直接读取
+  subset_manifest_path: "D:/learn/remoteSensingGeoscienceAnalysis/finalexam/codespace/hk_vit_seg_/outputs/train_runs/smoke/v3_11block8_smoke_seed42/manifests/smoke_subset_manifest.csv"
+  # 抽样随机种子
+  subset_seed: 42
+  # 各 split 抽样数量
+  # 注意：当前项目主 split 为 train/val/test。
+  # 01 脚本仍保留旧字段 test_in_domain/test_eco_holdout，因此这里设为 0 以兼容。
+  split_counts:
+    train: 256
+    val: 64
+    test_in_domain: 0
+    test_eco_holdout: 0
+
+# 轻量模型配置（TinySegNet）
+model:
+  # 解码阶段 dropout
+  dropout: 0.10
+
+# DataLoader 配置
+loader:
+  # smoke 以快速验证为主，batch 适中、worker 设 0 便于跨环境稳定运行
+  batch_size: 8
+  eval_batch_size: 8
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: false
+
+# 训练超参数（短周期）
+train:
+  # 仅跑 2 个 epoch 做连通性验证
+  max_epochs: 2
+  # 仅在 CUDA 可用时生效（脚本内会自动判断设备）
+  amp: true
+  # 梯度裁剪与梯度累积
+  grad_clip_norm: 1.0
+  grad_accum_steps: 1
+  # 每 N 个优化 step 打一次日志
+  log_every_n_steps: 5
+
+# 优化器（AdamW）
+optimizer:
+  lr: 1.0e-4
+  weight_decay: 1.0e-2
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+# 输出目录配置
+output:
+  # run 根目录（日志、指标、checkpoint 会写到此处）
+  root_dir: "D:/learn/remoteSensingGeoscienceAnalysis/finalexam/codespace/hk_vit_seg_/outputs/train_runs/smoke"
+  # 本次 run 子目录
+  run_subdir: "v3_11block8_smoke_seed42"
+
+# 数据冻结校验（smoke 阶段默认关闭）
+freeze:
+  verify_fingerprint_on_start: false
