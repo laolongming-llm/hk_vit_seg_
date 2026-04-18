@@ -1,0 +1,27 @@
+name: vit-seg-dl
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - torchaudio=2.5.1
+  - pytorch-cuda=12.1
+  - numpy
+  - pandas
+  - pyyaml
+  - rasterio
+  - scikit-learn
+  - matplotlib
+  - tensorboard
+  - tqdm
+  - rich
+  - pip:
+      - timm
+      - einops
+      - albumentations
+      - opencv-python-headless

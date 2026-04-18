@@ -1,0 +1,15 @@
+﻿# 11block-only + 8类 train manifest 再平衡配置
+input_manifest: "data/processed/vit_dataset/v3_11block8/manifests/tiles_manifest.csv"
+output_manifest: "data/processed/vit_dataset/v3_11block8/manifests/tiles_manifest_balanced_train.csv"
+report_dir: "data/processed/vit_dataset/v3_11block8/manifests/reports_balanced"
+
+num_classes: 8
+method: "auto_sqrt_inverse_freq"
+target_train_ratio: 1.6
+min_multiplier: 1.0
+max_multiplier: 4.0
+weight_floor: 0.5
+weight_cap: 3.0
+rare_class_ids: "6,7,8"
+rare_class_boost: 0.35
+seed: 42

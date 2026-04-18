@@ -1,0 +1,12 @@
+﻿# 11block-only + 8类 export 配置
+tiles_manifest: "data/processed/vit_dataset/v3_11block8/manifests/tiles_manifest.csv"
+manifests_dir: "data/processed/vit_dataset/v3_11block8/manifests"
+output_root: "data/processed/vit_dataset/v3_11block8"
+imagery_11block: "data/interim/imagery_1m_aligned/tdop_11block_1m_aligned.tif"
+label_11block: "data/interim/labels_1m_aligned/lumid_11block_1m_aligned.tif"
+
+max_tiles: 0
+copy_manifests: true
+progress_every: 100
+progress_seconds: 8
+show_gdal_warnings: false
