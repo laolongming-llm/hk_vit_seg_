@@ -15,17 +15,19 @@
 
 ## 推荐执行
 
+请先激活你自己的 Python/Conda 环境，并在**项目根目录**执行以下命令。
+
 单 seed（先验证）：
 
 ```powershell
-E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/formal/01_train_vit_seg_formal.py `
+python scripts/dl/formal/01_train_vit_seg_formal.py `
   --config configs/baseline_v1/train_vit_seg_baseline_v1_seed42.yaml
 ```
 
 训练后评估（val + test）：
 
 ```powershell
-E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/formal/02_eval_vit_seg_formal.py `
+python scripts/dl/formal/02_eval_vit_seg_formal.py `
   --config configs/baseline_v1/train_vit_seg_baseline_v1_seed42.yaml `
   --checkpoint outputs/train_runs/formal/baseline_v1_seed42/checkpoints/best.pth
 ```
@@ -33,17 +35,16 @@ E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/formal/02_eval_vit_
 多 seed 串行（默认即本目录 3 个 seed 配置）：
 
 ```powershell
-E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/formal/03_run_multiseed.py `
-  --python-exe E:\Programfiles\miniconda\envs\vit-seg\python.exe
+python scripts/dl/formal/03_run_multiseed.py
 ```
 
 结果聚合：
 
 ```powershell
-E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/formal/04_aggregate_multiseed_results.py
+python scripts/dl/formal/04_aggregate_multiseed_results.py
 ```
 
 ## 备注
 
-- `model.pretrained` 默认设为 `false`，避免首次运行因外网下载权重导致中断。若环境稳定联网且需要更高起点，可改为 `true`。
+- 当前基础配置使用 `model.pretrained: true`。若你的环境离线或下载不稳定，可改为 `false`。
 - 若显存不足，优先降低 `loader.batch_size`，或将 `model.backbone` 换为更小主干。

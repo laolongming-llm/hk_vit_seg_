@@ -55,9 +55,9 @@ data:
 
 # DataLoader 配置
 loader:
-  # 若显存紧张，优先下调 batch_size
-  batch_size: 2
-  eval_batch_size: 2
+  # 质量优先配置：batch_size=1，通过梯度累积提升等效 batch
+  batch_size: 1
+  eval_batch_size: 1
   # Windows 下 worker 过高可能导致不稳定，默认设 2
   num_workers: 2
   pin_memory: true
@@ -70,23 +70,23 @@ loader:
 model:
   # train_lib 目前支持：vit_seg_baseline / timm_seg
   architecture: "timm_seg"
-  # 轻量 ViT，适合先跑通 baseline
-  backbone: "vit_small_patch16_224"
-  # 关闭预训练以避免首跑下载权重带来的中断
-  pretrained: false
+  # 质量优先：升级为 ViT-Large 主干
+  backbone: "vit_large_patch16_224"
+  # 启用预训练权重提升收敛起点
+  pretrained: true
   dropout: 0.1
-  # 可选：simple_fpn_head / aspp_head
-  decoder_head: "simple_fpn_head"
-  drop_path_rate: 0.0
+  # 可选：simple_fpn_head / aspp_head；质量优先使用 aspp_head
+  decoder_head: "aspp_head"
+  drop_path_rate: 0.1
 
 # 训练过程配置
 train:
-  # baseline 建议先 40 epoch 观察收敛趋势
-  max_epochs: 40
+  # 质量优先：延长训练轮数
+  max_epochs: 80
   # 仅在 CUDA 可用时启用 AMP（脚本内会自动判断）
   amp: true
   grad_clip_norm: 1.0
-  grad_accum_steps: 1
+  grad_accum_steps: 2
   log_every_n_steps: 20
   # 每个 epoch 做一次验证
   val_every_n_epochs: 1
@@ -97,19 +97,19 @@ train:
 
 # AdamW 优化器
 optimizer:
-  lr: 1.0e-4
+  lr: 6.0e-5
   weight_decay: 1.0e-2
   betas: [0.9, 0.999]
   eps: 1.0e-8
-  # 主干与解码头差分学习率倍率（当前不做差分）
-  backbone_lr_mult: 1.0
+  # 主干与解码头差分学习率倍率（主干更保守）
+  backbone_lr_mult: 0.7
   decoder_lr_mult: 1.0
 
 # Poly 学习率调度
 scheduler:
-  warmup_epochs: 3
+  warmup_epochs: 5
   power: 0.9
-  min_lr: 1.0e-6
+  min_lr: 5.0e-7
 
 # 损失函数配置
 loss:

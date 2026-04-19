@@ -17,17 +17,19 @@
 
 ## 推荐执行顺序
 
+请先激活你自己的 Python/Conda 环境，并在**项目根目录**执行以下命令。
+
 ```powershell
 # 1) 生成 smoke 子集清单
-E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/smoke/01_build_smoke_subset_manifest.py `
+python scripts/dl/smoke/01_build_smoke_subset_manifest.py `
   --config configs/smoke_v1/smoke_tinyseg_v3_11block8_seed42.yaml
 
 # 2) 运行 smoke 训练
-E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/smoke/02_train_vit_seg_smoke.py `
+python scripts/dl/smoke/02_train_vit_seg_smoke.py `
   --config configs/smoke_v1/smoke_tinyseg_v3_11block8_seed42.yaml
 
 # 3) checkpoint 加载检查（默认用 best.pth）
-E:\Programfiles\miniconda\envs\vit-seg\python.exe scripts/dl/smoke/03_smoke_checkpoint_load_check.py `
+python scripts/dl/smoke/03_smoke_checkpoint_load_check.py `
   --config configs/smoke_v1/smoke_tinyseg_v3_11block8_seed42.yaml `
   --checkpoint outputs/train_runs/smoke/v3_11block8_smoke_seed42/checkpoints/best.pth
 ```
