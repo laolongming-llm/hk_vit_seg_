@@ -1,0 +1,147 @@
+# =========================
+# baseline_v1 基础配置（formal 训练）
+# 说明：
+# 1) 本文件为多 seed 共用基座；
+# 2) 具体 seed 在 train_vit_seg_baseline_v1_seed*.yaml 中覆盖；
+# 3) 当前数据集口径：train / val / test（v3_11block8）。
+# =========================
+
+# 实验基础信息与复现设置
+experiment:
+  # 实验名（会影响默认输出目录命名）
+  run_name: "baseline_v1_seed42"
+  # 随机种子（会被 seed 覆盖配置改写）
+  seed: 42
+  # 是否启用确定性计算（提高复现性）
+  deterministic: true
+  # cuDNN benchmark：复现优先时一般关闭
+  cudnn_benchmark: false
+
+# 数据与标签路径配置
+data:
+  # 已导出的 patch 数据集根目录
+  dataset_root: "data/processed/vit_dataset/v3_11block8"
+  # 训练使用的清单：train 为平衡后，val/test 保持原分布
+  manifest_path: "data/processed/vit_dataset/v3_11block8/manifests/tiles_manifest_balanced_train.csv"
+  # 目录与后缀约定（与导出脚本一致）
+  image_dirname: "images"
+  label_dirname: "labels"
+  image_suffix: ".tif"
+  label_suffix: ".tif"
+  # patch 尺寸与输入输出维度
+  patch_size: 512
+  in_channels: 3
+  num_classes: 8
+  # 忽略标签值（与数据预处理阶段一致）
+  ignore_index: 255
+  # 启动时先检查 manifest 对应文件是否齐全
+  validate_files_on_start: true
+  # 训练增强（仅 train split 生效）
+  augmentation:
+    enabled: true
+    # 空间增强
+    hflip_prob: 0.5
+    vflip_prob: 0.5
+    rot90_prob: 0.5
+    # 光谱增强
+    color_jitter_prob: 0.3
+    brightness_delta: 0.1
+    contrast_delta: 0.1
+    channel_scale_prob: 0.2
+    channel_scale_delta: 0.08
+    # 噪声增强
+    gaussian_noise_prob: 0.2
+    gaussian_noise_std: 0.02
+
+# DataLoader 配置
+loader:
+  # 若显存紧张，优先下调 batch_size
+  batch_size: 2
+  eval_batch_size: 2
+  # Windows 下 worker 过高可能导致不稳定，默认设 2
+  num_workers: 2
+  pin_memory: true
+  persistent_workers: true
+  # train 不丢弃尾 batch，保证样本充分利用
+  drop_last_train: false
+  prefetch_factor: 2
+
+# 模型结构配置（timm 主干 + 分割解码头）
+model:
+  # train_lib 目前支持：vit_seg_baseline / timm_seg
+  architecture: "timm_seg"
+  # 轻量 ViT，适合先跑通 baseline
+  backbone: "vit_small_patch16_224"
+  # 关闭预训练以避免首跑下载权重带来的中断
+  pretrained: false
+  dropout: 0.1
+  # 可选：simple_fpn_head / aspp_head
+  decoder_head: "simple_fpn_head"
+  drop_path_rate: 0.0
+
+# 训练过程配置
+train:
+  # baseline 建议先 40 epoch 观察收敛趋势
+  max_epochs: 40
+  # 仅在 CUDA 可用时启用 AMP（脚本内会自动判断）
+  amp: true
+  grad_clip_norm: 1.0
+  grad_accum_steps: 1
+  log_every_n_steps: 20
+  # 每个 epoch 做一次验证
+  val_every_n_epochs: 1
+  # 早停：连续 patience 个 epoch 无提升则停止
+  early_stopping_patience: 12
+  # 认为“提升”的最小阈值
+  early_stopping_min_delta: 0.0005
+
+# AdamW 优化器
+optimizer:
+  lr: 1.0e-4
+  weight_decay: 1.0e-2
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  # 主干与解码头差分学习率倍率（当前不做差分）
+  backbone_lr_mult: 1.0
+  decoder_lr_mult: 1.0
+
+# Poly 学习率调度
+scheduler:
+  warmup_epochs: 3
+  power: 0.9
+  min_lr: 1.0e-6
+
+# 损失函数配置
+loss:
+  # 可选：cross_entropy / ce_dice
+  type: "ce_dice"
+  ignore_index: 255
+  label_smoothing: 0.0
+  # 组合损失权重
+  ce_weight: 1.0
+  dice_weight: 1.0
+  # 类别权重：按训练集像元频率自动计算（sqrt 反比）
+  class_weights: "auto_sqrt_inverse_freq"
+  class_weights_floor: 0.2
+  class_weights_cap: 5.0
+  # clip 后是否再归一化；false 可保证 cap/floor 严格生效
+  class_weights_renorm_after_clip: false
+
+# 输出与 best 模型判据
+output:
+  root_dir: "outputs/train_runs/formal"
+  # 会被 seed 覆盖配置改写
+  run_subdir: "baseline_v1_seed42"
+  # 可选：val_miou / val_mf1 / val_overall_accuracy / val_loss
+  save_best_by: "val_miou"
+
+# 评估配置（02_eval 脚本默认读取这里）
+evaluation:
+  # 当前项目以 val + test 为主
+  splits_to_eval: ["val", "test"]
+  # 与旧 eco holdout 流程兼容的缺类处理策略（当前 split 不触发）
+  eco_holdout_missing_class_policy: "mark_na_and_average_present_classes"
+
+# 数据指纹冻结校验（当前关闭）
+freeze:
+  verify_fingerprint_on_start: false
