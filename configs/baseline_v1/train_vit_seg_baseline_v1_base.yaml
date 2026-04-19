@@ -82,7 +82,7 @@ model:
 # 训练过程配置
 train:
   # 质量优先：延长训练轮数
-  max_epochs: 80
+  max_epochs: 40
   # 仅在 CUDA 可用时启用 AMP（脚本内会自动判断）
   amp: true
   grad_clip_norm: 1.0

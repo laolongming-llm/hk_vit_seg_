@@ -17,6 +17,8 @@ import pandas as pd
 
 from train_lib import get_run_paths, load_config, write_csv
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
 
 def parse_args() -> argparse.Namespace:
     """解析聚合脚本参数。"""
@@ -115,7 +117,7 @@ def main() -> None:
         output_dir = Path(args.output_dir).expanduser().resolve()
     else:
         today = datetime.now().strftime("%Y-%m-%d")
-        output_dir = Path("outputs") / "evaluation_reports" / f"{today}_baseline_results"
+        output_dir = PROJECT_ROOT / "outputs" / "evaluation_reports" / f"{today}_baseline_results"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     seed_summary_path = output_dir / "seed_summary.csv"

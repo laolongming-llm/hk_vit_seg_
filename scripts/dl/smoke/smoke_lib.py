@@ -100,10 +100,16 @@ def load_config(config_path: str | Path) -> Dict[str, Any]:
 
 
 def resolve_project_path(path_ref: str | Path, config_path: str | Path) -> Path:
-    """结合当前配置位置解析项目内路径，供数据与输出路径统一调用。"""
+    """Resolve runtime paths deterministically for smoke scripts."""
     config_path = Path(config_path).resolve()
-    return resolve_ref_path(path_ref, config_path.parent)
+    path_obj = Path(path_ref)
+    if path_obj.is_absolute():
+        return path_obj
 
+    raw = str(path_ref).replace("\\", "/")
+    if raw.startswith("./") or raw.startswith("../"):
+        return (config_path.parent / path_obj).resolve()
+    return (PROJECT_ROOT / path_obj).resolve()
 
 def get_run_paths(cfg: Dict[str, Any], config_path: str | Path) -> Dict[str, Path]:
     """根据配置生成本次运行的目录结构（logs/metrics/checkpoints/manifests）。"""

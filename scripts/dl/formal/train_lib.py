@@ -103,10 +103,16 @@ def load_config(config_path: str | Path) -> Dict[str, Any]:
 
 
 def resolve_project_path(path_ref: str | Path, config_path: str | Path) -> Path:
-    """基于项目根与配置目录解析路径，供数据/输出路径统一调用。"""
+    """Resolve runtime paths deterministically for training/evaluation."""
     config_path = Path(config_path).resolve()
-    return resolve_ref_path(path_ref, config_path.parent)
+    path_obj = Path(path_ref)
+    if path_obj.is_absolute():
+        return path_obj
 
+    raw = str(path_ref).replace("\\", "/")
+    if raw.startswith("./") or raw.startswith("../"):
+        return (config_path.parent / path_obj).resolve()
+    return (PROJECT_ROOT / path_obj).resolve()
 
 def get_run_paths(cfg: Dict[str, Any], config_path: str | Path) -> Dict[str, Path]:
     """按配置生成 run 目录结构。"""
@@ -489,6 +495,105 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return str(value).strip().lower() not in {"0", "false", "off", "no", ""}
 
 
+def _candidate_hf_hub_roots() -> List[Path]:
+    """Collect candidate Hugging Face hub cache roots in priority order."""
+    roots: List[Path] = []
+    seen: set[str] = set()
+
+    def _add(path_obj: Optional[Path]) -> None:
+        if path_obj is None:
+            return
+        key = str(path_obj.resolve()) if path_obj.exists() else str(path_obj)
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(path_obj)
+
+    hf_hub_cache = os.environ.get("HF_HUB_CACHE")
+    if hf_hub_cache:
+        _add(Path(hf_hub_cache))
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        _add(Path(hf_home) / "hub")
+
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        _add(Path(xdg_cache_home) / "huggingface" / "hub")
+
+    _add(Path.home() / ".cache" / "huggingface" / "hub")
+    # Project-local preferred fallback on Windows workstations.
+    _add(Path(r"E:\cache\huggingface\hub"))
+    return roots
+
+
+def _resolve_timm_cache_dir() -> Optional[Path]:
+    """Resolve cache dir passed to timm / huggingface_hub APIs."""
+    for root in _candidate_hf_hub_roots():
+        if root.exists():
+            return root
+    return None
+
+
+def _find_local_hf_weight_file(hf_hub_id: str) -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
+    """Find a complete local snapshot weight file for a HF repo id."""
+    repo_id = str(hf_hub_id).strip()
+    if not repo_id:
+        return None, None, None
+    repo_id = repo_id.split("@", 1)[0]
+    repo_cache_name = f"models--{repo_id.replace('/', '--')}"
+
+    preferred_names = [
+        "model.safetensors",
+        "pytorch_model.bin",
+        "open_clip_pytorch_model.bin",
+    ]
+    preferred_exts = (".safetensors", ".bin", ".pth", ".pt")
+
+    for hub_root in _candidate_hf_hub_roots():
+        repo_dir = hub_root / repo_cache_name
+        snapshots_dir = repo_dir / "snapshots"
+        if not snapshots_dir.exists():
+            continue
+
+        ordered_snapshots: List[Path] = []
+        main_ref = repo_dir / "refs" / "main"
+        if main_ref.exists():
+            try:
+                main_sha = main_ref.read_text(encoding="utf-8").strip()
+                if main_sha:
+                    main_snapshot = snapshots_dir / main_sha
+                    if main_snapshot.exists():
+                        ordered_snapshots.append(main_snapshot)
+            except Exception:
+                pass
+
+        other_snapshots = sorted(
+            [p for p in snapshots_dir.iterdir() if p.is_dir()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for snap in other_snapshots:
+            if snap not in ordered_snapshots:
+                ordered_snapshots.append(snap)
+
+        for snapshot_dir in ordered_snapshots:
+            for name in preferred_names:
+                candidate = snapshot_dir / name
+                if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+                    return candidate, snapshot_dir, hub_root
+
+            for candidate in sorted(snapshot_dir.iterdir()):
+                if (
+                    candidate.is_file()
+                    and candidate.suffix.lower() in preferred_exts
+                    and candidate.stat().st_size > 0
+                ):
+                    return candidate, snapshot_dir, hub_root
+
+    return None, None, None
+
+
 def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> None:
     """Prefetch Hugging Face weights so terminal can show byte/speed progress via tqdm."""
     if not _env_flag("HK_VIT_SEG_HF_PREDOWNLOAD", "1"):
@@ -502,6 +607,15 @@ def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> No
     if not hf_hub_id:
         return
 
+    local_weight_file, local_snapshot_dir, local_hub_root = _find_local_hf_weight_file(str(hf_hub_id))
+    if local_weight_file is not None:
+        print(
+            "[hf-download] local cache hit: "
+            f"{local_weight_file} (snapshot={local_snapshot_dir}, cache={local_hub_root})",
+            flush=True,
+        )
+        return
+
     try:
         from huggingface_hub import HfApi, hf_hub_download, snapshot_download
         from tqdm.auto import tqdm as _TqdmBase
@@ -513,6 +627,8 @@ def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> No
     max_workers = int(os.environ.get("HK_VIT_SEG_HF_MAX_WORKERS", "4"))
     force_download = _env_flag("HK_VIT_SEG_HF_FORCE_DOWNLOAD", "0")
     progress_every_seconds = float(os.environ.get("HK_VIT_SEG_HF_PROGRESS_EVERY_SECONDS", "1.0"))
+    local_files_only = _env_flag("HF_HUB_OFFLINE", "0") or _env_flag("HK_VIT_SEG_HF_LOCAL_ONLY", "0")
+    cache_dir = _resolve_timm_cache_dir()
 
     class _LineProgressTqdm(_TqdmBase):
         """Line-based progress output that keeps logs readable (no carriage-return overwrite)."""
@@ -559,6 +675,9 @@ def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> No
 
     print(f"[hf-download] prefetch start: {hf_hub_id} (max_workers={max_workers})", flush=True)
     try:
+        if local_files_only:
+            print("[hf-download] local-only mode enabled and no cache hit, skip network prefetch.", flush=True)
+            return
         api = HfApi(token=token)
         info = api.model_info(repo_id=hf_hub_id, files_metadata=True)
         all_files = [s.rfilename for s in (info.siblings or [])]
@@ -580,6 +699,7 @@ def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> No
                 filename=preferred_weight,
                 token=token,
                 force_download=force_download,
+                cache_dir=str(cache_dir) if cache_dir is not None else None,
                 tqdm_class=_LineProgressTqdm,
             )
             # Download lightweight metadata file for cache completeness when present.
@@ -589,6 +709,7 @@ def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> No
                     filename="config.json",
                     token=token,
                     force_download=False,
+                    cache_dir=str(cache_dir) if cache_dir is not None else None,
                     tqdm_class=_LineProgressTqdm,
                 )
         else:
@@ -598,6 +719,7 @@ def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> No
                 allow_patterns=["*.safetensors", "*.bin", "*.pth", "*.pt", "*.json"],
                 force_download=force_download,
                 max_workers=max_workers,
+                cache_dir=str(cache_dir) if cache_dir is not None else None,
                 tqdm_class=_LineProgressTqdm,
             )
         print("[hf-download] prefetch done.", flush=True)
@@ -645,9 +767,36 @@ class TimmSegModel(nn.Module):
             create_kwargs["dynamic_img_size"] = True
 
         progress.step("backbone arguments prepared")
+        cache_dir = _resolve_timm_cache_dir()
+        if cache_dir is not None:
+            create_kwargs["cache_dir"] = str(cache_dir)
         if pretrained:
             # Keep HuggingFace transfer progress visible when hub backend supports it.
             os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+            hf_hub_id = None
+            try:
+                pretrained_cfg = timm.get_pretrained_cfg(backbone_name)
+                hf_hub_id = getattr(pretrained_cfg, "hf_hub_id", None)
+            except Exception:
+                hf_hub_id = None
+
+            if hf_hub_id:
+                local_weight_file, local_snapshot_dir, local_hub_root = _find_local_hf_weight_file(str(hf_hub_id))
+                if local_weight_file is not None:
+                    create_kwargs["pretrained_cfg_overlay"] = {
+                        "source": "timm",
+                        "file": str(local_weight_file),
+                    }
+                    print(
+                        "[model-init] local pretrained override enabled: "
+                        f"file={local_weight_file} (snapshot={local_snapshot_dir}, cache={local_hub_root})",
+                        flush=True,
+                    )
+                elif _env_flag("HF_HUB_OFFLINE", "0"):
+                    raise RuntimeError(
+                        "HF_HUB_OFFLINE=1 but no local pretrained cache found for "
+                        f"{hf_hub_id}. Disable offline mode or pre-download the weights."
+                    )
             _prefetch_hf_weights_if_possible(backbone_name=backbone_name, timm_module=timm)
         progress.step("pretrained cache checked")
         progress.start_spinner("creating backbone (pretrained may download)")
