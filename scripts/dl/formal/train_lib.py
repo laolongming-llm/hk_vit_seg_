@@ -18,6 +18,8 @@ import platform
 import random
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -383,6 +385,227 @@ class ASPPHead(nn.Module):
         return self.project(fused)
 
 
+class _ModelInitProgress:
+    """Simple stage progress for model initialization without extra dependencies."""
+
+    def __init__(self, total_steps: int = 4, enabled: bool = True):
+        self.total_steps = max(1, int(total_steps))
+        self.enabled = bool(enabled)
+        self.current_step = 0
+        self.stream = sys.stdout
+        self._is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
+        self._spinner_thread: Optional[threading.Thread] = None
+        self._spinner_stop: Optional[threading.Event] = None
+        self._spinner_label = ""
+        self._spinner_start_ts = 0.0
+        self._spinner_frames = ["|", "/", "-", "\\"]
+
+    def _format_bar(self) -> str:
+        width = 24
+        filled = int(round(width * (self.current_step / float(self.total_steps))))
+        filled = max(0, min(width, filled))
+        return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+    def _write_line(self, text: str, carriage_return: bool = False) -> None:
+        if carriage_return and self._is_tty:
+            print(f"\r{text}", end="", file=self.stream, flush=True)
+            return
+        print(text, file=self.stream, flush=True)
+
+    def start(self, label: str) -> None:
+        if not self.enabled:
+            return
+        self._write_line(f"[model-init] {self._format_bar()} {self.current_step}/{self.total_steps} {label}")
+
+    def step(self, label: str) -> None:
+        if not self.enabled:
+            return
+        self.current_step = min(self.total_steps, self.current_step + 1)
+        self._write_line(f"[model-init] {self._format_bar()} {self.current_step}/{self.total_steps} {label}")
+
+    def start_spinner(self, label: str) -> None:
+        if not self.enabled:
+            return
+        self.stop_spinner()
+        self._spinner_label = label
+        self._spinner_start_ts = time.time()
+        self._spinner_stop = threading.Event()
+
+        def _worker() -> None:
+            frame_idx = 0
+            last_non_tty_report_bucket = -1
+            while self._spinner_stop and not self._spinner_stop.wait(0.2):
+                elapsed = int(time.time() - self._spinner_start_ts)
+                if self._is_tty:
+                    frame = self._spinner_frames[frame_idx % len(self._spinner_frames)]
+                    frame_idx += 1
+                    line = (
+                        f"[model-init] {self._format_bar()} {self.current_step}/{self.total_steps} "
+                        f"{self._spinner_label} {frame} {elapsed}s"
+                    )
+                    self._write_line(line, carriage_return=True)
+                else:
+                    report_bucket = elapsed // 15
+                    if report_bucket != last_non_tty_report_bucket:
+                        last_non_tty_report_bucket = report_bucket
+                        self._write_line(
+                            f"[model-init] {self._format_bar()} {self.current_step}/{self.total_steps} "
+                            f"{self._spinner_label} ... {elapsed}s"
+                        )
+
+        self._spinner_thread = threading.Thread(target=_worker, daemon=True)
+        self._spinner_thread.start()
+
+    def stop_spinner(self, done_label: Optional[str] = None) -> None:
+        if self._spinner_stop is not None:
+            self._spinner_stop.set()
+        if self._spinner_thread is not None:
+            self._spinner_thread.join(timeout=1.0)
+        self._spinner_stop = None
+        self._spinner_thread = None
+        if not self.enabled:
+            return
+        if done_label:
+            elapsed = int(max(0.0, time.time() - self._spinner_start_ts))
+            self._write_line(
+                f"[model-init] {self._format_bar()} {self.current_step}/{self.total_steps} "
+                f"{done_label} ({elapsed}s)"
+            )
+
+    def finish(self, label: str) -> None:
+        if not self.enabled:
+            return
+        self.stop_spinner()
+        if self._is_tty:
+            print(file=self.stream, flush=True)
+        self._write_line(f"[model-init] {self._format_bar()} {self.current_step}/{self.total_steps} {label}")
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    """Parse bool-like env var flags such as 1/0, true/false, on/off."""
+    value = os.environ.get(name, default)
+    if value is None:
+        return False
+    return str(value).strip().lower() not in {"0", "false", "off", "no", ""}
+
+
+def _prefetch_hf_weights_if_possible(backbone_name: str, timm_module: Any) -> None:
+    """Prefetch Hugging Face weights so terminal can show byte/speed progress via tqdm."""
+    if not _env_flag("HK_VIT_SEG_HF_PREDOWNLOAD", "1"):
+        return
+
+    try:
+        pretrained_cfg = timm_module.get_pretrained_cfg(backbone_name)
+    except Exception:
+        return
+    hf_hub_id = getattr(pretrained_cfg, "hf_hub_id", None)
+    if not hf_hub_id:
+        return
+
+    try:
+        from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+        from tqdm.auto import tqdm as _TqdmBase
+    except Exception:
+        print("[hf-download] huggingface_hub/tqdm unavailable, skip predownload.", flush=True)
+        return
+
+    token = os.environ.get("HF_TOKEN")
+    max_workers = int(os.environ.get("HK_VIT_SEG_HF_MAX_WORKERS", "4"))
+    force_download = _env_flag("HK_VIT_SEG_HF_FORCE_DOWNLOAD", "0")
+    progress_every_seconds = float(os.environ.get("HK_VIT_SEG_HF_PROGRESS_EVERY_SECONDS", "1.0"))
+
+    class _LineProgressTqdm(_TqdmBase):
+        """Line-based progress output that keeps logs readable (no carriage-return overwrite)."""
+
+        def __init__(self, *args: Any, **kwargs: Any):
+            self._last_emit_ts = 0.0
+            kwargs.setdefault("ascii", True)
+            kwargs.setdefault("dynamic_ncols", False)
+            super().__init__(*args, **kwargs)
+
+        def display(self, msg: Optional[str] = None, pos: Optional[int] = None) -> None:  # type: ignore[override]
+            _ = msg
+            _ = pos
+            now = time.time()
+            if not hasattr(self, "_last_emit_ts"):
+                self._last_emit_ts = 0.0
+            if (self.total is not None) and (self.n < self.total):
+                if (now - self._last_emit_ts) < progress_every_seconds:
+                    return
+            self._last_emit_ts = now
+
+            rate = self.format_dict.get("rate", None)
+            if rate is None or rate <= 0:
+                rate_text = "n/a"
+                eta_text = "n/a"
+            else:
+                rate_text = f"{self.format_sizeof(rate)}/s"
+                if self.total is not None and self.total >= self.n:
+                    eta_sec = int((self.total - self.n) / max(rate, 1e-12))
+                    eta_text = f"{eta_sec}s"
+                else:
+                    eta_text = "n/a"
+
+            if self.total is not None and self.total > 0:
+                pct = 100.0 * (self.n / float(self.total))
+                payload = (
+                    f"{self.desc or 'download'} | {pct:6.2f}% | "
+                    f"{self.format_sizeof(self.n)}/{self.format_sizeof(self.total)} | "
+                    f"{rate_text} | eta {eta_text}"
+                )
+            else:
+                payload = f"{self.desc or 'download'} | {self.format_sizeof(self.n)} | {rate_text}"
+            print(f"[hf-progress] {payload}", flush=True)
+
+    print(f"[hf-download] prefetch start: {hf_hub_id} (max_workers={max_workers})", flush=True)
+    try:
+        api = HfApi(token=token)
+        info = api.model_info(repo_id=hf_hub_id, files_metadata=True)
+        all_files = [s.rfilename for s in (info.siblings or [])]
+        preferred_weight = None
+        if "model.safetensors" in all_files:
+            preferred_weight = "model.safetensors"
+        elif "pytorch_model.bin" in all_files:
+            preferred_weight = "pytorch_model.bin"
+        else:
+            for name in all_files:
+                if name.endswith((".safetensors", ".bin", ".pth", ".pt")):
+                    preferred_weight = name
+                    break
+
+        if preferred_weight:
+            print(f"[hf-download] downloading weight file: {preferred_weight}", flush=True)
+            hf_hub_download(
+                repo_id=hf_hub_id,
+                filename=preferred_weight,
+                token=token,
+                force_download=force_download,
+                tqdm_class=_LineProgressTqdm,
+            )
+            # Download lightweight metadata file for cache completeness when present.
+            if "config.json" in all_files:
+                hf_hub_download(
+                    repo_id=hf_hub_id,
+                    filename="config.json",
+                    token=token,
+                    force_download=False,
+                    tqdm_class=_LineProgressTqdm,
+                )
+        else:
+            snapshot_download(
+                repo_id=hf_hub_id,
+                token=token,
+                allow_patterns=["*.safetensors", "*.bin", "*.pth", "*.pt", "*.json"],
+                force_download=force_download,
+                max_workers=max_workers,
+                tqdm_class=_LineProgressTqdm,
+            )
+        print("[hf-download] prefetch done.", flush=True)
+    except Exception as exc:
+        # Non-fatal: timm may still download from its own path as fallback.
+        print(f"[hf-download] prefetch skipped due to error: {exc!r}", flush=True)
+
+
 class TimmSegModel(nn.Module):
     """通用 timm 主干 + 可选解码头的分割模型。"""
 
@@ -402,6 +625,13 @@ class TimmSegModel(nn.Module):
         except Exception as exc:  # pragma: no cover - 依赖缺失时给清晰报错
             raise RuntimeError("timm is required for segmentation model.") from exc
 
+        progress = _ModelInitProgress(
+            total_steps=5,
+            enabled=os.environ.get("HK_VIT_SEG_INIT_PROGRESS", "1").strip().lower()
+            not in {"0", "false", "off"},
+        )
+        progress.start("start model initialization")
+
         create_kwargs: Dict[str, Any] = {
             "pretrained": pretrained,
             "num_classes": 0,
@@ -409,11 +639,21 @@ class TimmSegModel(nn.Module):
         }
         if float(drop_path_rate) > 0:
             create_kwargs["drop_path_rate"] = float(drop_path_rate)
-        if "vit" in backbone_name:
+        # ViT/DeiT/EVA 等 token-based 主干通常需要动态输入尺寸支持。
+        if any(key in backbone_name for key in ("vit", "deit", "eva")):
             create_kwargs["img_size"] = int(input_size)
             create_kwargs["dynamic_img_size"] = True
 
+        progress.step("backbone arguments prepared")
+        if pretrained:
+            # Keep HuggingFace transfer progress visible when hub backend supports it.
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+            _prefetch_hf_weights_if_possible(backbone_name=backbone_name, timm_module=timm)
+        progress.step("pretrained cache checked")
+        progress.start_spinner("creating backbone (pretrained may download)")
         self.backbone = timm.create_model(backbone_name, **create_kwargs)
+        progress.stop_spinner(done_label="backbone ready")
+        progress.step("backbone created")
         self.decoder_head_name = str(decoder_head).strip().lower()
         embed_dim = int(getattr(self.backbone, "num_features", 768))
 
@@ -426,6 +666,9 @@ class TimmSegModel(nn.Module):
                 "Unsupported model.decoder_head: "
                 f"'{decoder_head}'. Supported: simple_fpn_head, aspp_head"
             )
+        progress.step("decoder created")
+        progress.step("model initialization completed")
+        progress.finish("ready")
 
     def _resolve_patch_size(self) -> Tuple[int, int]:
         patch_embed = getattr(self.backbone, "patch_embed", None)
@@ -449,28 +692,48 @@ class TimmSegModel(nn.Module):
         bsz, token_count, channels = tokens.shape
         patch_h, patch_w = self._resolve_patch_size()
         expected = max(1, input_h // patch_h) * max(1, input_w // patch_w)
-        has_cls_token = False
-        if token_count == expected + 1:
-            has_cls_token = True
-        elif token_count != expected:
-            # 容错：当主干输出 token 数与输入尺度推导不一致时，尝试按正方网格恢复。
-            maybe_without_cls = token_count - 1
-            grid = int(round(float(maybe_without_cls) ** 0.5))
-            if grid * grid == maybe_without_cls:
-                expected = maybe_without_cls
-                has_cls_token = True
-            else:
-                grid = int(round(float(token_count) ** 0.5))
-                if grid * grid == token_count:
-                    expected = token_count
-                else:
-                    raise ValueError(
-                        "Token count mismatch and cannot infer 2D grid: "
-                        f"token_count={token_count}, expected={expected}."
-                    )
+        # timm 的部分主干（如 DINOv3）会输出多个前缀 token（cls + register tokens）。
+        # 优先按 num_prefix_tokens（若存在）剥离；其次按 token_count-expected 自适应剥离。
+        prefix_tokens = int(getattr(self.backbone, "num_prefix_tokens", 0) or 0)
+        if token_count != expected:
+            candidate_prefix: List[int] = []
+            if prefix_tokens > 0:
+                candidate_prefix.append(prefix_tokens)
+            if token_count > expected:
+                candidate_prefix.append(token_count - expected)
+            if token_count == expected + 1:
+                candidate_prefix.append(1)
 
-        if has_cls_token:
-            tokens = tokens[:, 1:, :]
+            seen = set()
+            stripped = False
+            for n_prefix in candidate_prefix:
+                if n_prefix in seen:
+                    continue
+                seen.add(n_prefix)
+                if n_prefix <= 0 or n_prefix >= token_count:
+                    continue
+                cand = tokens[:, n_prefix:, :]
+                if cand.shape[1] == expected:
+                    tokens = cand
+                    stripped = True
+                    break
+
+            if (not stripped) and token_count != expected:
+                # 容错：当主干输出 token 数与输入尺度推导不一致时，尝试按正方网格恢复。
+                maybe_without_cls = token_count - 1
+                grid = int(round(float(maybe_without_cls) ** 0.5))
+                if grid * grid == maybe_without_cls:
+                    tokens = tokens[:, 1:, :]
+                else:
+                    grid = int(round(float(token_count) ** 0.5))
+                    if grid * grid == token_count:
+                        pass
+                    else:
+                        raise ValueError(
+                            "Token count mismatch and cannot infer 2D grid: "
+                            f"token_count={token_count}, expected={expected}."
+                        )
+
         spatial = int(round(float(tokens.shape[1]) ** 0.5))
         if spatial * spatial != tokens.shape[1]:
             raise ValueError(f"Token count {tokens.shape[1]} cannot form square feature map.")

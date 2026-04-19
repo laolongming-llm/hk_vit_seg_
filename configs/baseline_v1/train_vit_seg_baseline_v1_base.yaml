@@ -70,8 +70,8 @@ loader:
 model:
   # train_lib 目前支持：vit_seg_baseline / timm_seg
   architecture: "timm_seg"
-  # 质量优先：升级为 ViT-Large 主干
-  backbone: "vit_large_patch16_224"
+  # 质量优先：使用遥感域 DINOv3 作为训练主干
+  backbone: "vit_large_patch16_dinov3.sat493m"
   # 启用预训练权重提升收敛起点
   pretrained: true
   dropout: 0.1

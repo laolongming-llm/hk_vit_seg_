@@ -46,5 +46,6 @@ python scripts/dl/formal/04_aggregate_multiseed_results.py
 
 ## 备注
 
-- 当前基础配置使用 `model.pretrained: true`。若你的环境离线或下载不稳定，可改为 `false`。
+- 当前基础配置使用 `model.pretrained: true` 且主干为 `vit_large_patch16_dinov3.sat493m`。
+- 首次运行会下载较大的预训练权重，可能耗时较长；若环境离线或下载不稳定，可先改为 `false` 做联通性验证。
 - 若显存不足，优先降低 `loader.batch_size`，或将 `model.backbone` 换为更小主干。
