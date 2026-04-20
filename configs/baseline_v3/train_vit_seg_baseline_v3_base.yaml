@@ -44,6 +44,7 @@ data:
 loader:
   batch_size: 1
   eval_batch_size: 1
+  # 性能模式：恢复多进程数据加载，加快训练吞吐
   num_workers: 2
   pin_memory: true
   persistent_workers: true
