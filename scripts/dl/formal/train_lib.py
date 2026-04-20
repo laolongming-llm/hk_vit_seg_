@@ -1017,6 +1017,7 @@ class SegmentationTileDataset(Dataset):
         label_suffix: str,
         num_classes: int,
         ignore_index: int,
+        ignore_lum_ids: Optional[List[int]] = None,
         enable_augment: bool = False,
         augment_cfg: Optional[Dict[str, Any]] = None,
     ):
@@ -1028,6 +1029,11 @@ class SegmentationTileDataset(Dataset):
         self.label_suffix = label_suffix
         self.num_classes = num_classes
         self.ignore_index = ignore_index
+        raw_ignore_lum_ids = [int(x) for x in (ignore_lum_ids or [])]
+        self.ignore_lum_ids = sorted({x for x in raw_ignore_lum_ids if x >= 1})
+        self._ignore_lum_ids_np = (
+            np.asarray(self.ignore_lum_ids, dtype=np.int64) if self.ignore_lum_ids else None
+        )
         self.enable_augment = bool(enable_augment)
         self.augment_cfg = augment_cfg or {}
 
@@ -1104,6 +1110,8 @@ class SegmentationTileDataset(Dataset):
 
         mapped_label = np.full_like(label, fill_value=self.ignore_index, dtype=np.int64)
         valid_mask = (label >= 1) & (label <= self.num_classes)
+        if self._ignore_lum_ids_np is not None:
+            valid_mask &= ~np.isin(label, self._ignore_lum_ids_np)
         mapped_label[valid_mask] = label[valid_mask] - 1
 
         image_tensor = torch.from_numpy(image)

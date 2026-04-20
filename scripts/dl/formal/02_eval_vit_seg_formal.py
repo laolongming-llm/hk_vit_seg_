@@ -150,6 +150,8 @@ def main() -> None:
 
     num_classes = int(data_cfg["num_classes"])
     ignore_index = int(data_cfg.get("ignore_index", 255))
+    ignore_lum_ids = [int(x) for x in data_cfg.get("ignore_lum_ids", [])]
+    logger.info("Label remap policy: ignore_lum_ids=%s -> ignore_index=%d", ignore_lum_ids, ignore_index)
     criterion = build_segmentation_criterion(
         loss_cfg=loss_cfg,
         ignore_index=ignore_index,
@@ -192,6 +194,7 @@ def main() -> None:
             label_suffix=data_cfg["label_suffix"],
             num_classes=num_classes,
             ignore_index=ignore_index,
+            ignore_lum_ids=ignore_lum_ids,
         )
         data_loader = build_dataloader(dataset, loader_cfg=loader_cfg)
         metric = evaluate_split(

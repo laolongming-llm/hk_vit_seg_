@@ -34,6 +34,7 @@ data:
   num_classes: 8
   # 忽略标签值（与数据预处理阶段一致）
   ignore_index: 255
+  # 将以下 LUM_ID 在训练/评估时映射为 ignore_index（本实验：农业用地 6 -> 255）
   # 启动时先检查 manifest 对应文件是否齐全
   validate_files_on_start: true
   # 训练增强（仅 train split 生效）
@@ -74,6 +75,11 @@ model:
   backbone: "vit_large_patch16_dinov3.sat493m"
   # 启用预训练权重提升收敛起点
   pretrained: true
+  # 预训练权重来源说明（文档字段；当前训练脚本不读取这些键）
+  pretrained_provider: "timm"
+  pretrained_repo_id: "timm/vit_large_patch16_dinov3.sat493m"
+  pretrained_host: "Hugging Face Hub"
+  pretrained_file_preference: "model.safetensors"
   dropout: 0.1
   # 可选：simple_fpn_head / aspp_head；质量优先使用 aspp_head
   decoder_head: "aspp_head"

@@ -1,0 +1,104 @@
+# Single-run baseline v2 config migrated from hk_flood_vit_seg
+# Source: hk_flood_vit_seg/configs/baseline_v1/train_vit_seg_baseline_v1.yaml
+# Note: this file is standalone (no multi-seed split).
+
+experiment:
+  name: vit_seg_baseline_v2
+  run_name: vit_seg_baseline_v2_single
+  seed: 42
+  deterministic: true
+  cudnn_benchmark: false
+  resume_from: null
+data:
+  dataset_root: data/processed/vit_dataset/v3_11block8
+  manifest_path: data/processed/vit_dataset/v3_11block8/manifests/tiles_manifest_balanced_train.csv
+  splits:
+    train: train
+    val: val
+    test: test
+  image_dirname: images
+  label_dirname: labels
+  image_suffix: .tif
+  label_suffix: .tif
+  patch_size: 512
+  in_channels: 3
+  num_classes: 8
+  ignore_index: 255
+freeze:
+  dataset_fingerprint_path: null
+  verify_fingerprint_on_start: false
+  required_fingerprint_targets: []
+loader:
+  batch_size: 2
+  eval_batch_size: 2
+  num_workers: 2
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+  drop_last_train: false
+model:
+  architecture: vit_seg_baseline
+  backbone: vit_base_patch16_224
+  decoder_head: simple_fpn_head
+  pretrained: true
+  pretrained_source: imagenet21k
+  out_classes: 8
+  drop_path_rate: 0.1
+  dropout: 0.1
+train:
+  max_epochs: 40
+  amp: true
+  grad_accum_steps: 1
+  grad_clip_norm: 1.0
+  log_every_n_steps: 20
+  val_every_n_epochs: 1
+  early_stopping_patience: 12
+  early_stopping_min_delta: 0.0
+  save_top_k: 1
+optimizer:
+  type: AdamW
+  lr: 0.0001
+  weight_decay: 0.01
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+scheduler:
+  type: poly
+  power: 0.9
+  min_lr: 1.0e-06
+  warmup_epochs: 3
+loss:
+  type: cross_entropy
+  ignore_index: 255
+  class_weights: null
+  class_weights_floor: 0.2
+  class_weights_cap: 5.0
+  class_weights_renorm_after_clip: false
+  label_smoothing: 0.0
+evaluation:
+  splits_to_eval:
+  - val
+  - test
+  metrics:
+  - miou
+  - mf1
+  - overall_accuracy
+  - per_class_iou
+  - per_class_f1
+  reduction: pixel_confusion_matrix
+  ignore_index: 255
+  eco_holdout_missing_class_policy: mark_na_and_average_present_classes
+output:
+  root_dir: outputs/train_runs/formal
+  save_best_by: val_miou
+  save_last: true
+  save_confusion_matrix: true
+  save_per_class_metrics: true
+  save_prediction_visuals: false
+  run_subdir: vit_seg_baseline_v2_single
+reproducibility:
+  write_config_snapshot: true
+  record_git_commit: true
+  record_dataset_fingerprint: true
+  record_environment: true

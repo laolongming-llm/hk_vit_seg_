@@ -49,3 +49,11 @@ python scripts/dl/formal/04_aggregate_multiseed_results.py
 - 当前基础配置使用 `model.pretrained: true` 且主干为 `vit_large_patch16_dinov3.sat493m`。
 - 首次运行会下载较大的预训练权重，可能耗时较长；若环境离线或下载不稳定，可先改为 `false` 做联通性验证。
 - 若显存不足，优先降低 `loader.batch_size`，或将 `model.backbone` 换为更小主干。
+
+## 预训练权重来源（记录字段）
+
+- `model.pretrained_provider`: `timm`
+- `model.pretrained_repo_id`: `timm/vit_large_patch16_dinov3.sat493m`
+- `model.pretrained_host`: `Hugging Face Hub`
+- `model.pretrained_file_preference`: `model.safetensors`
+- 以上字段用于实验记录与复现说明，当前训练脚本不会读取这些键。

@@ -315,6 +315,7 @@ def main() -> None:
             label_suffix=data_cfg["label_suffix"],
             num_classes=int(data_cfg["num_classes"]),
             ignore_index=int(data_cfg.get("ignore_index", 255)),
+            ignore_lum_ids=[int(x) for x in data_cfg.get("ignore_lum_ids", [])],
         )
         data_loader = build_eval_dataloader(dataset, loader_cfg=loader_cfg)
 

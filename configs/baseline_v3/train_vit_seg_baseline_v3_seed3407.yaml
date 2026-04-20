@@ -1,0 +1,10 @@
+# seed3407 配置
+# 仅覆盖 base 中的 run_name / seed / run_subdir
+base_config: "configs/baseline_v3/train_vit_seg_baseline_v3_base.yaml"
+
+experiment:
+  run_name: "baseline_v3_seed3407"
+  seed: 3407
+
+output:
+  run_subdir: "baseline_v3_seed3407"
