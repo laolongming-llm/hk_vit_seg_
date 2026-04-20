@@ -27,3 +27,11 @@
 python scripts/dl/formal/01_train_vit_seg_formal.py `
   --config configs/baseline_v5/train_vit_seg_baseline_v5_single.yaml
 ```
+
+## 测试命令（项目根目录执行）
+
+```powershell
+python scripts/dl/formal/02_eval_vit_seg_formal.py `
+  --config configs/baseline_v5/train_vit_seg_baseline_v5_single.yaml `
+  --checkpoint outputs/train_runs/formal/baseline_v5_partial_unfreeze_seed42/checkpoints/best.pth
+```
