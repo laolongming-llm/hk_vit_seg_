@@ -161,6 +161,82 @@ def build_optimizer(
     )
 
 
+def apply_backbone_freeze_policy(model: nn.Module, model_cfg: Dict[str, Any], logger: Any) -> None:
+    """Apply optional backbone freezing / partial unfreezing policy.
+
+    Supported model config keys:
+    - model.freeze_backbone: bool
+    - model.unfreeze_backbone_last_n_blocks: int
+    - model.unfreeze_backbone_norm: bool (default: true)
+    """
+    freeze_backbone = bool(model_cfg.get("freeze_backbone", False))
+    unfreeze_last_n_blocks = int(model_cfg.get("unfreeze_backbone_last_n_blocks", 0))
+    unfreeze_backbone_norm = bool(model_cfg.get("unfreeze_backbone_norm", True))
+
+    if unfreeze_last_n_blocks < 0:
+        raise ValueError("model.unfreeze_backbone_last_n_blocks must be >= 0.")
+
+    if not hasattr(model, "backbone"):
+        if freeze_backbone or unfreeze_last_n_blocks > 0:
+            raise ValueError("Model has no backbone attribute, cannot apply freeze policy.")
+        return
+
+    backbone = model.backbone
+    applied_freeze = False
+    unfrozen_blocks = 0
+    total_blocks = 0
+
+    # If partial unfreezing is requested, we first freeze whole backbone then unfreeze tail blocks.
+    if freeze_backbone or unfreeze_last_n_blocks > 0:
+        for p in backbone.parameters():
+            p.requires_grad = False
+        applied_freeze = True
+
+    if unfreeze_last_n_blocks > 0:
+        blocks = getattr(backbone, "blocks", None)
+        if blocks is None:
+            raise ValueError(
+                "model.unfreeze_backbone_last_n_blocks is set, but backbone has no 'blocks' attribute."
+            )
+        try:
+            total_blocks = len(blocks)  # type: ignore[arg-type]
+        except TypeError as exc:  # pragma: no cover - defensive
+            raise ValueError("backbone.blocks is not a sized container.") from exc
+
+        if total_blocks <= 0:
+            raise ValueError("backbone.blocks is empty, cannot partially unfreeze.")
+
+        unfrozen_blocks = min(unfreeze_last_n_blocks, total_blocks)
+        for blk in list(blocks)[-unfrozen_blocks:]:
+            for p in blk.parameters():
+                p.requires_grad = True
+
+        if unfreeze_backbone_norm and hasattr(backbone, "norm"):
+            norm_module = getattr(backbone, "norm")
+            if isinstance(norm_module, nn.Module):
+                for p in norm_module.parameters():
+                    p.requires_grad = True
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    backbone_total_params = sum(p.numel() for p in backbone.parameters())
+    backbone_trainable_params = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+    logger.info(
+        "Backbone freeze policy: freeze_backbone=%s unfreeze_last_n_blocks=%d/%d "
+        "unfreeze_backbone_norm=%s applied_freeze=%s | "
+        "trainable_params=%d/%d backbone_trainable=%d/%d",
+        freeze_backbone,
+        unfrozen_blocks,
+        total_blocks,
+        unfreeze_backbone_norm,
+        applied_freeze,
+        trainable_params,
+        total_params,
+        backbone_trainable_params,
+        backbone_total_params,
+    )
+
+
 def resolve_best_metric(output_cfg: Dict[str, Any]) -> Dict[str, str]:
     """解析 best checkpoint 依据指标与比较方向。
 
@@ -476,6 +552,7 @@ def main() -> None:
     logger.info("Train augmentation enabled: %s", bool(data_cfg.get("augmentation", {}).get("enabled", False)))
 
     model = build_model_from_config(cfg).to(device)
+    apply_backbone_freeze_policy(model=model, model_cfg=model_cfg, logger=logger)
     class_weights_tensor = resolve_class_weights(
         loss_cfg=loss_cfg,
         train_df=train_df,

@@ -1,0 +1,20 @@
+# baseline_v4（单配置）
+# 目标：保留预训练权重，并尽量只训练 ASPP 头
+base_config: "configs/baseline_v3/train_vit_seg_baseline_v3_base.yaml"
+
+experiment:
+  run_name: "baseline_v4_freeze_like_seed42"
+  seed: 42
+
+model:
+  # 明确保留预训练初始化
+  pretrained: true
+  decoder_head: "aspp_head"
+
+optimizer:
+  # 通过将 backbone 学习率倍率设为 0，近似“冻结主干，仅训练分割头”
+  backbone_lr_mult: 0.0
+  decoder_lr_mult: 1.0
+
+output:
+  run_subdir: "baseline_v4_freeze_like_seed42"
