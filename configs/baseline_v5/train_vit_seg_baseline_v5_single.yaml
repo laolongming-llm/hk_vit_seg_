@@ -1,31 +1,10 @@
-# baseline_v5（单配置）
-# 目标：部分解冻，仅解冻 backbone 最后若干层 + 训练 ASPP 头
-base_config: "configs/baseline_v3/train_vit_seg_baseline_v3_base.yaml"
+# baseline_v5（单配置，seed42）
+# 继承 v5 base，单独保留 run_name / seed / run_subdir 入口
+base_config: "configs/baseline_v5/train_vit_seg_baseline_v5_base.yaml"
 
 experiment:
-  run_name: "baseline_v5_partial_unfreeze_seed42"
+  run_name: "baseline_v5_partial_unfreeze_v2_strict7_seed42"
   seed: 42
 
-model:
-  # 保留预训练初始化
-  pretrained: true
-  decoder_head: "aspp_head"
-  # 部分解冻策略：先冻结 backbone，再解冻最后 N 个 block
-  freeze_backbone: true
-  unfreeze_backbone_last_n_blocks: 2
-  # 同时解冻 backbone 最后的归一化层，提升适配能力
-  unfreeze_backbone_norm: true
-
-optimizer:
-  # 头部正常学习率，backbone 仅最后几层参与更新且用更小学习率
-  backbone_lr_mult: 0.2
-  decoder_lr_mult: 1.0
-  lr: 4.0e-5
-
-train:
-  # 部分解冻阶段适当降低上限，先看稳定性和趋势
-  max_epochs: 30
-  early_stopping_patience: 8
-
 output:
-  run_subdir: "baseline_v5_partial_unfreeze_seed42"
+  run_subdir: "baseline_v5_partial_unfreeze_v2_strict7_seed42"

@@ -1,10 +1,4 @@
-"""Formal 评估脚本（按 checkpoint 在多 split 输出指标）。
-
-功能与作用：
-1. 加载 formal 训练 checkpoint 并在指定 split 执行统一评估。
-2. 输出 overall/per-class 指标与混淆矩阵文件，作为最终汇总输入。
-3. 对 eco holdout 缺类场景给出 NA 标注，避免指标误读。
-"""
+"""Formal evaluation script for checkpoint metrics on configured splits."""
 
 from __future__ import annotations
 
@@ -12,6 +6,7 @@ import argparse
 import math
 from pathlib import Path
 from typing import Any, Dict, List
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -26,6 +21,7 @@ from train_lib import (
     load_checkpoint,
     load_config,
     read_manifest,
+    resolve_class_lum_ids,
     resolve_project_path,
     setup_logger,
     update_confusion_matrix,
@@ -35,7 +31,6 @@ from train_lib import (
 
 
 def parse_args() -> argparse.Namespace:
-    """解析评估命令行参数。"""
     parser = argparse.ArgumentParser(description="Evaluate formal checkpoint on configured splits.")
     parser.add_argument("--config", required=True, help="Path to formal config YAML.")
     parser.add_argument("--checkpoint", required=True, help="Path to checkpoint file.")
@@ -48,7 +43,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_dataloader(dataset: SegmentationTileDataset, loader_cfg: Dict[str, Any]) -> DataLoader:
-    """创建评估 DataLoader。"""
     num_workers = int(loader_cfg.get("num_workers", 0))
     pin_memory = bool(loader_cfg.get("pin_memory", True))
     batch_size = int(loader_cfg.get("eval_batch_size", loader_cfg.get("batch_size", 2)))
@@ -72,7 +66,6 @@ def evaluate_split(
     num_classes: int,
     ignore_index: int,
 ) -> Dict[str, Any]:
-    """执行单个 split 的评估，返回 loss、指标与混淆矩阵。"""
     model.eval()
     losses: List[float] = []
     confusion = torch.zeros((num_classes, num_classes), dtype=torch.int64)
@@ -98,14 +91,12 @@ def evaluate_split(
 
 
 def resolve_splits(cfg: Dict[str, Any], user_splits: str) -> List[str]:
-    """确定本次评估要执行的 split 列表。"""
     if user_splits.strip():
         return [item.strip() for item in user_splits.split(",") if item.strip()]
     return list(cfg.get("evaluation", {}).get("splits_to_eval", ["val", "test_in_domain", "test_eco_holdout"]))
 
 
 def metric_to_cell(value: float, present: bool) -> str:
-    """将 per-class 指标按缺类规则转成 CSV 输出单元格。"""
     if not present:
         return "NA"
     if math.isnan(value):
@@ -113,19 +104,21 @@ def metric_to_cell(value: float, present: bool) -> str:
     return f"{value:.8f}"
 
 
-def write_confusion_matrix(path: Path, confusion: List[List[int]], num_classes: int) -> None:
-    """将混淆矩阵按 CSV 写盘。"""
+def write_confusion_matrix(path: Path, confusion: List[List[int]], class_lum_ids: List[int]) -> None:
     rows: List[Dict[str, Any]] = []
     for row_idx, row_vals in enumerate(confusion):
-        row: Dict[str, Any] = {"class_idx": row_idx}
+        row: Dict[str, Any] = {"class_idx": row_idx, "lum_id": int(class_lum_ids[row_idx])}
         for col_idx, value in enumerate(row_vals):
-            row[f"pred_{col_idx}"] = int(value)
+            row[f"pred_lum_{class_lum_ids[col_idx]}"] = int(value)
         rows.append(row)
-    write_csv(path=path, rows=rows, fieldnames=["class_idx"] + [f"pred_{i}" for i in range(num_classes)])
+    write_csv(
+        path=path,
+        rows=rows,
+        fieldnames=["class_idx", "lum_id"] + [f"pred_lum_{lum_id}" for lum_id in class_lum_ids],
+    )
 
 
 def main() -> None:
-    """执行 formal checkpoint 多 split 评估。"""
     args = parse_args()
     cfg = load_config(args.config)
     config_path = Path(cfg["_meta"]["resolved_config_path"])
@@ -148,10 +141,16 @@ def main() -> None:
     model.load_state_dict(payload["model_state_dict"], strict=True)
     model.eval()
 
-    num_classes = int(data_cfg["num_classes"])
+    class_lum_ids = resolve_class_lum_ids(data_cfg)
+    num_classes = len(class_lum_ids)
     ignore_index = int(data_cfg.get("ignore_index", 255))
     ignore_lum_ids = [int(x) for x in data_cfg.get("ignore_lum_ids", [])]
-    logger.info("Label remap policy: ignore_lum_ids=%s -> ignore_index=%d", ignore_lum_ids, ignore_index)
+    logger.info(
+        "Label remap policy: class_lum_ids=%s | ignore_lum_ids=%s -> ignore_index=%d",
+        class_lum_ids,
+        ignore_lum_ids,
+        ignore_index,
+    )
     criterion = build_segmentation_criterion(
         loss_cfg=loss_cfg,
         ignore_index=ignore_index,
@@ -195,6 +194,7 @@ def main() -> None:
             num_classes=num_classes,
             ignore_index=ignore_index,
             ignore_lum_ids=ignore_lum_ids,
+            class_lum_ids=class_lum_ids,
         )
         data_loader = build_dataloader(dataset, loader_cfg=loader_cfg)
         metric = evaluate_split(
@@ -228,7 +228,7 @@ def main() -> None:
                 {
                     "split": split_name,
                     "class_idx": class_idx,
-                    "lum_id": class_idx + 1,
+                    "lum_id": int(class_lum_ids[class_idx]),
                     "present_in_gt": int(present),
                     "gt_pixels": int(metric["gt_pixels_per_class"][class_idx]),
                     "pred_pixels": int(metric["pred_pixels_per_class"][class_idx]),
@@ -242,7 +242,7 @@ def main() -> None:
         write_confusion_matrix(
             path=confusion_path,
             confusion=metric["confusion_matrix"],
-            num_classes=num_classes,
+            class_lum_ids=class_lum_ids,
         )
         logger.info(
             "split=%s eval_loss=%.6f miou=%.6f mf1=%.6f oa=%.6f",

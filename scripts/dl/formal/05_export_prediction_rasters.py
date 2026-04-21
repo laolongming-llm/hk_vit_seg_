@@ -1,13 +1,4 @@
-﻿"""Formal 预测栅格导出脚本。
-功能：
-1. 基于指定 checkpoint 对目标 split 执行推理，按 tile 导出预测 GeoTIFF。
-2. 同时导出两套用地类型预测：
-   - 掩膜版：沿用标签中的 255（无监督/空值区）作为 unknown。
-   - 全像元版：所有像元都给出 1~10 的预测类别。
-3. 额外导出置信度图（max-softmax，0~1），用于判别空值区预测可信度。
-4. 预测类别图复用 scripts/lumid_style.py 的 LUM_ID_STYLE，并导出同名 .qml/.clr。
-5. 输出 summary CSV，统计各 split 的导出情况。
-"""
+"""Formal prediction raster export script."""
 
 from __future__ import annotations
 
@@ -30,6 +21,7 @@ from train_lib import (
     load_checkpoint,
     load_config,
     read_manifest,
+    resolve_class_lum_ids,
     resolve_project_path,
     setup_logger,
     validate_manifest_files,
@@ -41,11 +33,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.lumid_style import LUM_ID_STYLE, write_style_sidecars_for_raster
+from scripts.data_prep.lumid_style import LUM_ID_STYLE, write_style_sidecars_for_raster
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="Export formal prediction rasters with LUM_ID color mapping.")
     parser.add_argument("--config", required=True, help="Path to formal config YAML.")
     parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint.")
@@ -70,14 +61,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_splits(cfg: Dict[str, Any], user_splits: str) -> List[str]:
-    """确定本次导出需要处理的 split 列表。"""
     if user_splits.strip():
         return [item.strip() for item in user_splits.split(",") if item.strip()]
     return list(cfg.get("evaluation", {}).get("splits_to_eval", ["val", "test_in_domain", "test_eco_holdout"]))
 
 
 def build_eval_dataloader(dataset: SegmentationTileDataset, loader_cfg: Dict[str, Any]) -> DataLoader:
-    """构建导出阶段使用的 DataLoader。"""
     num_workers = int(loader_cfg.get("num_workers", 0))
     eval_batch_size = int(loader_cfg.get("eval_batch_size", loader_cfg.get("batch_size", 2)))
     return DataLoader(
@@ -92,7 +81,6 @@ def build_eval_dataloader(dataset: SegmentationTileDataset, loader_cfg: Dict[str
 
 
 def build_lumid_colormap() -> Dict[int, tuple[int, int, int, int]]:
-    """根据 LUM_ID_STYLE 生成 0~255 调色板。"""
     colormap: Dict[int, tuple[int, int, int, int]] = {idx: (0, 0, 0, 0) for idx in range(256)}
     for value, _, _, _, (r, g, b) in LUM_ID_STYLE:
         colormap[int(value)] = (int(r), int(g), int(b), 255)
@@ -107,7 +95,6 @@ def _write_prediction_raster(
     band_desc: str,
     legend: str,
 ) -> None:
-    """写入 uint8 预测栅格，并写入类别色表。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(data, 1)
@@ -117,7 +104,6 @@ def _write_prediction_raster(
 
 
 def _write_confidence_raster(out_path: Path, confidence: np.ndarray, profile: Dict[str, Any]) -> None:
-    """写入 float32 置信度图（max-softmax，范围 0~1）。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **profile) as dst:
         dst.write(confidence.astype(np.float32), 1)
@@ -129,17 +115,38 @@ def _write_confidence_raster(out_path: Path, confidence: np.ndarray, profile: Di
 
 
 def _maybe_write_sidecars(raster_path: Path, write_sidecars: bool, overwrite: bool) -> None:
-    """按策略生成 .qml/.clr：
-    - write_sidecars=False：不生成。
-    - overwrite=True：无条件重写。
-    - overwrite=False：仅在 sidecar 缺失时补写。
-    """
     if not write_sidecars:
         return
     qml_path = raster_path.with_suffix(".qml")
     clr_path = raster_path.with_suffix(".clr")
     if overwrite or (not qml_path.exists()) or (not clr_path.exists()):
         write_style_sidecars_for_raster(raster_path)
+
+
+def _map_pred_class_to_lumid(
+    pred_class_map: np.ndarray,
+    class_lum_ids: List[int],
+    ignore_lum_ids: List[int],
+    ignore_index: int,
+) -> np.ndarray:
+    if pred_class_map.size == 0:
+        return pred_class_map.astype(np.uint8)
+
+    max_pred = int(pred_class_map.max())
+    if max_pred >= len(class_lum_ids):
+        raise ValueError(
+            "Prediction class index out of mapping range: "
+            f"max_pred={max_pred}, len(class_lum_ids)={len(class_lum_ids)}"
+        )
+
+    class_to_lum = np.asarray(class_lum_ids, dtype=np.uint16)
+    pred_lumid = class_to_lum[pred_class_map.astype(np.int64)]
+
+    if ignore_lum_ids:
+        ignore_lum_np = np.asarray(ignore_lum_ids, dtype=np.uint16)
+        pred_lumid[np.isin(pred_lumid, ignore_lum_np)] = np.uint16(ignore_index)
+
+    return pred_lumid.astype(np.uint8)
 
 
 def export_one_prediction(
@@ -152,24 +159,25 @@ def export_one_prediction(
     overwrite: bool,
     write_sidecars: bool,
     ignore_index: int,
+    class_lum_ids: List[int],
+    ignore_lum_ids: List[int],
 ) -> Dict[str, Any]:
-    """导出单个 tile 的三类结果：
-    1. 掩膜版预测（_pred_masked.tif）
-    2. 全像元预测（_pred_all_pixels.tif）
-    3. 置信度图（_confidence.tif）
-
-    返回值包含本 tile 的写出状态与计数，供 split 级 summary 汇总。
-    """
     with rasterio.open(label_path) as label_src:
         label_arr = label_src.read(1)
         base_profile = label_src.profile.copy()
 
-    # 模型输出是 0~9 类别索引；导出时恢复到 LUM_ID 语义编码 1~10。
-    pred_lumid_all = (pred_class_map.astype(np.uint8) + 1).astype(np.uint8)
+    pred_lumid_all = _map_pred_class_to_lumid(
+        pred_class_map=pred_class_map,
+        class_lum_ids=class_lum_ids,
+        ignore_lum_ids=ignore_lum_ids,
+        ignore_index=ignore_index,
+    )
 
-    # 掩膜版：将原标签为 ignore_index 的位置置回 ignore_index，便于和既有流程一致对比。
     pred_lumid_masked = pred_lumid_all.copy()
     pred_lumid_masked[label_arr == ignore_index] = np.uint8(ignore_index)
+
+    active_lum_text = ",".join(str(x) for x in class_lum_ids)
+    ignored_lum_text = ",".join(str(x) for x in ignore_lum_ids) if ignore_lum_ids else "none"
 
     masked_path = out_dir / f"{tile_id}_pred_masked.tif"
     all_pixels_path = out_dir / f"{tile_id}_pred_all_pixels.tif"
@@ -183,7 +191,6 @@ def export_one_prediction(
         compress=profile_masked.get("compress") or "lzw",
     )
 
-    # 全像元图不再保留 nodata，表示每个像元都有预测类别。
     profile_all = base_profile.copy()
     profile_all.update(
         count=1,
@@ -211,7 +218,10 @@ def export_one_prediction(
             profile=profile_masked,
             colormap=colormap,
             band_desc="LUM_ID_PRED_MASKED",
-            legend=f"LUM_ID prediction with label-mask ({ignore_index} kept as unknown).",
+            legend=(
+                f"LUM_ID prediction with label-mask ({ignore_index}=unknown). "
+                f"active_lum_ids=[{active_lum_text}] ignored_lum_ids=[{ignored_lum_text}]"
+            ),
         )
         _maybe_write_sidecars(masked_path, write_sidecars=write_sidecars, overwrite=overwrite)
         masked_written = 1
@@ -223,7 +233,10 @@ def export_one_prediction(
             profile=profile_all,
             colormap=colormap,
             band_desc="LUM_ID_PRED_ALL_PIXELS",
-            legend="LUM_ID prediction for all pixels (1~10).",
+            legend=(
+                f"LUM_ID prediction for all pixels. active_lum_ids=[{active_lum_text}] "
+                f"ignored_lum_ids=[{ignored_lum_text}] {ignore_index}=unknown"
+            ),
         )
         _maybe_write_sidecars(all_pixels_path, write_sidecars=write_sidecars, overwrite=overwrite)
         all_pixels_written = 1
@@ -242,19 +255,29 @@ def export_one_prediction(
 
 
 def main() -> None:
-    """执行预测栅格导出主流程。"""
     args = parse_args()
     cfg = load_config(args.config)
     config_path = Path(cfg["_meta"]["resolved_config_path"])
 
     data_cfg = cfg.get("data", {})
     loader_cfg = cfg.get("loader", {})
+    class_lum_ids = resolve_class_lum_ids(data_cfg)
+    num_classes = len(class_lum_ids)
+    ignore_lum_ids = [int(x) for x in data_cfg.get("ignore_lum_ids", [])]
+    ignore_index = int(data_cfg.get("ignore_index", 255))
+
     run_paths = get_run_paths(cfg, config_path)
     ensure_run_dirs(run_paths)
     logger = setup_logger(run_paths["logs_dir"] / "export_predictions.log", logger_name="formal_export_predictions")
 
     splits = resolve_splits(cfg, args.splits)
     logger.info("Prediction export splits: %s", splits)
+    logger.info(
+        "Label remap policy: class_lum_ids=%s | ignore_lum_ids=%s -> ignore_index=%d",
+        class_lum_ids,
+        ignore_lum_ids,
+        ignore_index,
+    )
 
     checkpoint_path = resolve_project_path(args.checkpoint, config_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -313,9 +336,10 @@ def main() -> None:
             label_dirname=data_cfg["label_dirname"],
             image_suffix=data_cfg["image_suffix"],
             label_suffix=data_cfg["label_suffix"],
-            num_classes=int(data_cfg["num_classes"]),
-            ignore_index=int(data_cfg.get("ignore_index", 255)),
-            ignore_lum_ids=[int(x) for x in data_cfg.get("ignore_lum_ids", [])],
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            ignore_lum_ids=ignore_lum_ids,
+            class_lum_ids=class_lum_ids,
         )
         data_loader = build_eval_dataloader(dataset, loader_cfg=loader_cfg)
 
@@ -330,7 +354,6 @@ def main() -> None:
             images = batch["image"].to(device, non_blocking=True)
             with torch.no_grad():
                 logits = model(images)
-                # 置信度采用每像元类别概率的最大值（max-softmax）。
                 probs = torch.softmax(logits, dim=1)
                 confidence, pred = torch.max(probs, dim=1)
                 pred = pred.detach().cpu().numpy().astype(np.uint8)
@@ -361,7 +384,9 @@ def main() -> None:
                     colormap=colormap,
                     overwrite=bool(args.overwrite),
                     write_sidecars=not bool(args.skip_sidecars),
-                    ignore_index=int(data_cfg.get("ignore_index", 255)),
+                    ignore_index=ignore_index,
+                    class_lum_ids=class_lum_ids,
+                    ignore_lum_ids=ignore_lum_ids,
                 )
 
                 total += 1

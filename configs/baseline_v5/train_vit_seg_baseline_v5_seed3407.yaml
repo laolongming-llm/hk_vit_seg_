@@ -1,0 +1,10 @@
+# seed3407（v5 部分解冻）
+# 仅覆盖 single 配置中的 run_name / seed / run_subdir
+base_config: "configs/baseline_v5/train_vit_seg_baseline_v5_single.yaml"
+
+experiment:
+  run_name: "baseline_v5_partial_unfreeze_v2_strict7_seed3407"
+  seed: 3407
+
+output:
+  run_subdir: "baseline_v5_partial_unfreeze_v2_strict7_seed3407"

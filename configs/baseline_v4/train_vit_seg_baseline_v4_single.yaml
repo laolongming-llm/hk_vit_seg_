@@ -16,5 +16,8 @@ optimizer:
   # 仅显式保留解码头学习率倍率
   decoder_lr_mult: 1.0
 
+train:
+  early_stopping_patience: 8
+
 output:
   run_subdir: "baseline_v4_freeze_seed42"

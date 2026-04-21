@@ -30,6 +30,7 @@ from train_lib import (
     load_checkpoint,
     load_config,
     read_manifest,
+    resolve_class_lum_ids,
     resolve_project_path,
     save_checkpoint,
     save_yaml,
@@ -271,7 +272,7 @@ def resolve_best_metric(output_cfg: Dict[str, Any]) -> Dict[str, str]:
 def resolve_class_weights(
     loss_cfg: Dict[str, Any],
     train_df: pd.DataFrame,
-    num_classes: int,
+    class_lum_ids: List[int],
     device: torch.device,
     logger: Any,
 ) -> Optional[torch.Tensor]:
@@ -292,6 +293,8 @@ def resolve_class_weights(
     if class_weights_cfg is None:
         logger.info("Class weights: disabled (equal weights).")
         return None
+
+    num_classes = len(class_lum_ids)
 
     if isinstance(class_weights_cfg, list):
         if len(class_weights_cfg) != num_classes:
@@ -320,7 +323,7 @@ def resolve_class_weights(
                 f"Got '{class_weights_cfg}', expected one of {sorted(valid_modes)}."
             )
 
-        class_cols = [f"class_{i}" for i in range(1, num_classes + 1)]
+        class_cols = [f"class_{lum_id}" for lum_id in class_lum_ids]
         missing_cols = [c for c in class_cols if c not in train_df.columns]
         if missing_cols:
             raise ValueError(
@@ -501,10 +504,16 @@ def main() -> None:
             preview = "\n".join(missing_errors[:10])
             raise FileNotFoundError(f"Missing dataset files ({len(missing_errors)}). First errors:\n{preview}")
 
-    num_classes = int(data_cfg["num_classes"])
+    class_lum_ids = resolve_class_lum_ids(data_cfg)
+    num_classes = len(class_lum_ids)
     ignore_index = int(data_cfg.get("ignore_index", 255))
     ignore_lum_ids = [int(x) for x in data_cfg.get("ignore_lum_ids", [])]
-    logger.info("Label remap policy: ignore_lum_ids=%s -> ignore_index=%d", ignore_lum_ids, ignore_index)
+    logger.info(
+        "Label remap policy: class_lum_ids=%s | ignore_lum_ids=%s -> ignore_index=%d",
+        class_lum_ids,
+        ignore_lum_ids,
+        ignore_index,
+    )
     train_dataset = SegmentationTileDataset(
         manifest_df=train_df,
         dataset_root=dataset_root,
@@ -515,6 +524,7 @@ def main() -> None:
         num_classes=num_classes,
         ignore_index=ignore_index,
         ignore_lum_ids=ignore_lum_ids,
+        class_lum_ids=class_lum_ids,
         enable_augment=bool(data_cfg.get("augmentation", {}).get("enabled", False)),
         augment_cfg=dict(data_cfg.get("augmentation", {})),
     )
@@ -528,6 +538,7 @@ def main() -> None:
         num_classes=num_classes,
         ignore_index=ignore_index,
         ignore_lum_ids=ignore_lum_ids,
+        class_lum_ids=class_lum_ids,
         enable_augment=False,
         augment_cfg=None,
     )
@@ -556,7 +567,7 @@ def main() -> None:
     class_weights_tensor = resolve_class_weights(
         loss_cfg=loss_cfg,
         train_df=train_df,
-        num_classes=num_classes,
+        class_lum_ids=class_lum_ids,
         device=device,
         logger=logger,
     )
@@ -798,14 +809,14 @@ def main() -> None:
     if best_confusion is not None:
         conf_rows: List[Dict[str, Any]] = []
         for row_idx, row_vals in enumerate(best_confusion):
-            row: Dict[str, Any] = {"class_idx": row_idx}
+            row: Dict[str, Any] = {"class_idx": row_idx, "lum_id": int(class_lum_ids[row_idx])}
             for col_idx, value in enumerate(row_vals):
-                row[f"pred_{col_idx}"] = int(value)
+                row[f"pred_lum_{class_lum_ids[col_idx]}"] = int(value)
             conf_rows.append(row)
         write_csv(
             path=run_paths["metrics_dir"] / "confusion_matrix_val.csv",
             rows=conf_rows,
-            fieldnames=["class_idx"] + [f"pred_{i}" for i in range(num_classes)],
+            fieldnames=["class_idx", "lum_id"] + [f"pred_lum_{lum_id}" for lum_id in class_lum_ids],
         )
     logger.info("Formal training completed successfully.")
 

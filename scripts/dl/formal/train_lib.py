@@ -114,6 +114,39 @@ def resolve_project_path(path_ref: str | Path, config_path: str | Path) -> Path:
         return (config_path.parent / path_obj).resolve()
     return (PROJECT_ROOT / path_obj).resolve()
 
+
+def resolve_class_lum_ids(data_cfg: Dict[str, Any]) -> List[int]:
+    """Resolve class-index to LUM_ID mapping.
+
+    Priority:
+    1. data.class_lum_ids (explicit mapping, recommended for compact remap)
+    2. fallback to contiguous [1..num_classes] (legacy behavior)
+    """
+    explicit = data_cfg.get("class_lum_ids", None)
+    if explicit is not None:
+        if not isinstance(explicit, list):
+            raise ValueError("data.class_lum_ids must be a list of positive integer LUM_IDs.")
+        lum_ids = [int(x) for x in explicit]
+        if not lum_ids:
+            raise ValueError("data.class_lum_ids cannot be empty.")
+        if any(x < 1 for x in lum_ids):
+            raise ValueError(f"data.class_lum_ids must be >= 1, got: {lum_ids}")
+        if len(set(lum_ids)) != len(lum_ids):
+            raise ValueError(f"data.class_lum_ids contains duplicated values: {lum_ids}")
+        if "num_classes" in data_cfg:
+            cfg_num_classes = int(data_cfg["num_classes"])
+            if cfg_num_classes != len(lum_ids):
+                raise ValueError(
+                    "data.num_classes must equal len(data.class_lum_ids). "
+                    f"Got num_classes={cfg_num_classes}, len(class_lum_ids)={len(lum_ids)}."
+                )
+        return lum_ids
+
+    num_classes = int(data_cfg.get("num_classes", 0))
+    if num_classes <= 0:
+        raise ValueError("data.num_classes must be a positive integer.")
+    return list(range(1, num_classes + 1))
+
 def get_run_paths(cfg: Dict[str, Any], config_path: str | Path) -> Dict[str, Path]:
     """按配置生成 run 目录结构。"""
     output_cfg = cfg.get("output", {})
@@ -990,12 +1023,13 @@ def build_model_from_config(cfg: Dict[str, Any]) -> nn.Module:
     """根据配置构建正式训练模型。"""
     model_cfg = cfg.get("model", {})
     data_cfg = cfg.get("data", {})
+    class_lum_ids = resolve_class_lum_ids(data_cfg)
     architecture = str(model_cfg.get("architecture", "vit_seg_baseline")).lower()
     if architecture not in {"vit_seg_baseline", "timm_seg"}:
         raise ValueError(f"Unsupported architecture: {architecture}")
     return TimmSegModel(
         backbone_name=str(model_cfg.get("backbone", "vit_base_patch16_224")),
-        num_classes=int(data_cfg.get("num_classes", 10)),
+        num_classes=len(class_lum_ids),
         pretrained=bool(model_cfg.get("pretrained", True)),
         dropout=float(model_cfg.get("dropout", 0.1)),
         input_size=int(data_cfg.get("patch_size", 512)),
@@ -1018,6 +1052,7 @@ class SegmentationTileDataset(Dataset):
         num_classes: int,
         ignore_index: int,
         ignore_lum_ids: Optional[List[int]] = None,
+        class_lum_ids: Optional[List[int]] = None,
         enable_augment: bool = False,
         augment_cfg: Optional[Dict[str, Any]] = None,
     ):
@@ -1027,13 +1062,34 @@ class SegmentationTileDataset(Dataset):
         self.label_dirname = label_dirname
         self.image_suffix = image_suffix
         self.label_suffix = label_suffix
-        self.num_classes = num_classes
+        self.num_classes = int(num_classes)
         self.ignore_index = ignore_index
         raw_ignore_lum_ids = [int(x) for x in (ignore_lum_ids or [])]
         self.ignore_lum_ids = sorted({x for x in raw_ignore_lum_ids if x >= 1})
         self._ignore_lum_ids_np = (
             np.asarray(self.ignore_lum_ids, dtype=np.int64) if self.ignore_lum_ids else None
         )
+        self.class_lum_ids = [int(x) for x in (class_lum_ids or [])]
+        self._lumid_to_class_lut: Optional[np.ndarray] = None
+        if self.class_lum_ids:
+            if any(x < 1 for x in self.class_lum_ids):
+                raise ValueError(f"class_lum_ids must be >= 1, got: {self.class_lum_ids}")
+            if len(set(self.class_lum_ids)) != len(self.class_lum_ids):
+                raise ValueError(f"class_lum_ids contains duplicated values: {self.class_lum_ids}")
+            if self.num_classes != len(self.class_lum_ids):
+                raise ValueError(
+                    "num_classes must equal len(class_lum_ids). "
+                    f"Got num_classes={self.num_classes}, len(class_lum_ids)={len(self.class_lum_ids)}."
+                )
+            max_lum_id = int(max(self.class_lum_ids + self.ignore_lum_ids + [0]))
+            lut_size = max(256, max_lum_id + 1)
+            lut = np.full((lut_size,), fill_value=self.ignore_index, dtype=np.int64)
+            for class_idx, lum_id in enumerate(self.class_lum_ids):
+                lut[int(lum_id)] = int(class_idx)
+            for lum_id in self.ignore_lum_ids:
+                if 0 <= int(lum_id) < lut_size:
+                    lut[int(lum_id)] = self.ignore_index
+            self._lumid_to_class_lut = lut
         self.enable_augment = bool(enable_augment)
         self.augment_cfg = augment_cfg or {}
 
@@ -1109,10 +1165,15 @@ class SegmentationTileDataset(Dataset):
             image = image / 255.0
 
         mapped_label = np.full_like(label, fill_value=self.ignore_index, dtype=np.int64)
-        valid_mask = (label >= 1) & (label <= self.num_classes)
-        if self._ignore_lum_ids_np is not None:
-            valid_mask &= ~np.isin(label, self._ignore_lum_ids_np)
-        mapped_label[valid_mask] = label[valid_mask] - 1
+        if self._lumid_to_class_lut is not None:
+            lut = self._lumid_to_class_lut
+            in_lut_mask = (label >= 0) & (label < int(lut.shape[0]))
+            mapped_label[in_lut_mask] = lut[label[in_lut_mask]]
+        else:
+            valid_mask = (label >= 1) & (label <= self.num_classes)
+            if self._ignore_lum_ids_np is not None:
+                valid_mask &= ~np.isin(label, self._ignore_lum_ids_np)
+            mapped_label[valid_mask] = label[valid_mask] - 1
 
         image_tensor = torch.from_numpy(image)
         label_tensor = torch.from_numpy(mapped_label)

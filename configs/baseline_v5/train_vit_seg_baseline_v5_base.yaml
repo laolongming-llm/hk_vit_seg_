@@ -1,21 +1,20 @@
 # =========================
-# baseline_v3 基础配置（formal 训练）
+# baseline_v5 基础配置（formal 训练）
 # 说明：
-# 1) 基于 baseline_v1；
-# 2) 新增策略：将 lum_id=6 映射为 ignore_index=255；
+# 1) 严格 7 类数据集：v2_11block7；
+# 2) 策略：冻结 backbone + 解冻最后 N 个 block（部分解冻）；
 # 3) 使用 ViT-Large DINOv3 遥感预训练主干。
 # =========================
 
 experiment:
-  # 默认 run_name 会被 seed 配置覆盖
-  run_name: "baseline_v3_seed42"
+  run_name: "baseline_v5_partial_unfreeze_v2_strict7_seed42"
   seed: 42
   deterministic: true
   cudnn_benchmark: false
 
 data:
-  dataset_root: "data/processed/vit_dataset/v3_11block8"
-  manifest_path: "data/processed/vit_dataset/v3_11block8/manifests/tiles_manifest_balanced_train.csv"
+  dataset_root: "data/processed/vit_dataset/v2_11block7"
+  manifest_path: "data/processed/vit_dataset/v2_11block7/manifests/tiles_manifest_balanced_train.csv"
   image_dirname: "images"
   label_dirname: "labels"
   image_suffix: ".tif"
@@ -23,12 +22,11 @@ data:
   patch_size: 512
   in_channels: 3
   num_classes: 7
-  # Compact class mapping (class_idx -> LUM_ID)
-  class_lum_ids: [1, 2, 3, 4, 5, 7, 8]
+  # strict7：标签值即类别 id
+  class_lum_ids: [1, 2, 3, 4, 5, 6, 7]
   ignore_index: 255
-  # 将农业用地（lum_id=6）忽略，不参与损失与指标计算
-  # 农业用地在lum中占比仅 0.0110%，且只出现在 129/6673 个 train tile
-  ignore_lum_ids: [6]
+  # strict7 已完成重映射，这里不再额外忽略任何 lum_id
+  ignore_lum_ids: []
   validate_files_on_start: true
   augmentation:
     enabled: true
@@ -46,7 +44,6 @@ data:
 loader:
   batch_size: 1
   eval_batch_size: 1
-  # 性能模式：恢复多进程数据加载，加快训练吞吐
   num_workers: 2
   pin_memory: true
   persistent_workers: true
@@ -62,26 +59,31 @@ model:
   pretrained_repo_id: "timm/vit_large_patch16_dinov3.sat493m"
   pretrained_host: "Hugging Face Hub"
   pretrained_file_preference: "model.safetensors"
-  dropout: 0.1
+  dropout: 0.2
   decoder_head: "aspp_head"
   drop_path_rate: 0.1
+  # 部分解冻策略：先冻结，再解冻最后 N 个 block
+  freeze_backbone: true
+  unfreeze_backbone_last_n_blocks: 2
+  # 同时解冻 backbone 末端归一化层，提升域适配能力
+  unfreeze_backbone_norm: true
 
 train:
-  max_epochs: 40
+  max_epochs: 30
   amp: true
   grad_clip_norm: 1.0
   grad_accum_steps: 2
   log_every_n_steps: 20
   val_every_n_epochs: 1
-  early_stopping_patience: 12
+  early_stopping_patience: 8
   early_stopping_min_delta: 0.0005
 
 optimizer:
-  lr: 6.0e-5
+  lr: 4.0e-5
   weight_decay: 1.0e-2
   betas: [0.9, 0.999]
   eps: 1.0e-8
-  backbone_lr_mult: 0.7
+  backbone_lr_mult: 0.2
   decoder_lr_mult: 1.0
 
 scheduler:
@@ -102,8 +104,7 @@ loss:
 
 output:
   root_dir: "outputs/train_runs/formal"
-  # 默认 run_subdir 会被 seed 配置覆盖
-  run_subdir: "baseline_v3_seed42"
+  run_subdir: "baseline_v5_partial_unfreeze_v2_strict7_seed42"
   save_best_by: "val_miou"
 
 evaluation:
