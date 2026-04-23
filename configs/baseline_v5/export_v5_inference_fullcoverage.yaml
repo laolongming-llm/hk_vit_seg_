@@ -1,0 +1,18 @@
+# baseline_v5 推理全域导出专用配置
+# 用途：使用 inference_fullcoverage 数据集（无 split buffer）进行 05 导出
+
+base_config: "configs/baseline_v5/train_vit_seg_baseline_v5_single.yaml"
+
+experiment:
+  run_name: "baseline_v5_export_inference_fullcoverage_seed42"
+  seed: 42
+
+data:
+  dataset_root: "data/processed/vit_dataset/v2_11block7_inference_full"
+  manifest_path: "data/processed/vit_dataset/v2_11block7_inference_full/manifests/tiles_manifest.csv"
+
+evaluation:
+  splits_to_eval: ["train", "val", "test"]
+
+output:
+  run_subdir: "baseline_v5_export_inference_fullcoverage_seed42"

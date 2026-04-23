@@ -1,0 +1,23 @@
+# 11block strict7 inference manifest（近全覆盖）
+# 目标：用于推理出图，尽量覆盖可用区域（不使用 split 缓冲带）
+
+imagery_11block: "data/interim/imagery_1m_aligned/tdop_11block_1m_aligned.tif"
+label_11block: "data/interim/labels_1m_aligned/lumid_11block_1m_aligned_v2_strict7.tif"
+output_dir: "data/processed/vit_dataset/v2_11block7_inference_full/manifests"
+
+patch_size: 512
+train_stride: 128
+eval_stride: 128
+buffer_m: 0.0
+
+label_nodata: 255
+# 保持 >0 以满足脚本参数校验，同时尽量放宽过滤
+valid_ratio_train: 0.000001
+valid_ratio_valtest: 0.000001
+
+split_train_ratio: 0.70
+split_val_ratio: 0.15
+
+gate_train: 0
+gate_val: 0
+gate_test: 0

@@ -1,0 +1,22 @@
+# 11block strict7 inference manifest (full coverage, no internal split gaps)
+
+imagery_11block: "data/interim/imagery_1m_aligned/tdop_11block_1m_aligned.tif"
+label_11block: "data/interim/labels_1m_aligned/lumid_11block_1m_aligned_v2_strict7.tif"
+output_dir: "data/processed/vit_dataset/v2_11block7_inference_full_nosplit/manifests"
+
+patch_size: 512
+train_stride: 128
+eval_stride: 128
+buffer_m: 0.0
+
+label_nodata: 255
+valid_ratio_train: 0.000001
+valid_ratio_valtest: 0.000001
+
+# Keep split boundaries near right edge to avoid central no-data seams.
+split_train_ratio: 0.9998
+split_val_ratio: 0.0001
+
+gate_train: 0
+gate_val: 0
+gate_test: 0

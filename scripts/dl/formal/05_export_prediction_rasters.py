@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import rasterio
+from rasterio.crs import CRS
 import torch
 from torch.utils.data import DataLoader
 
@@ -33,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.data_prep.lumid_style import LUM_ID_STYLE, write_style_sidecars_for_raster
+from scripts.data_prep.lumid_style import resolve_style_entries, write_style_sidecars_for_raster
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,9 +81,52 @@ def build_eval_dataloader(dataset: SegmentationTileDataset, loader_cfg: Dict[str
     )
 
 
-def build_lumid_colormap() -> Dict[int, tuple[int, int, int, int]]:
+def resolve_style_profile(data_cfg: Dict[str, Any], class_lum_ids: List[int], ignore_lum_ids: List[int]) -> str:
+    explicit = (
+        str(
+            data_cfg.get("label_style_profile")
+            or data_cfg.get("style_profile")
+            or data_cfg.get("label_schema")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    if explicit:
+        return explicit
+    # Auto rule for this project: strict7 remapped labels are [1..7] with no extra ignore lum_ids.
+    if class_lum_ids == [1, 2, 3, 4, 5, 6, 7] and len(ignore_lum_ids) == 0:
+        return "strict7"
+    return "lum8"
+
+
+def normalize_crs_for_qgis(crs_obj: Any) -> Any:
+    if crs_obj is None:
+        return None
+    try:
+        epsg = crs_obj.to_epsg()
+    except Exception:
+        epsg = None
+    if epsg:
+        return CRS.from_epsg(int(epsg))
+
+    crs_text = str(crs_obj).lower()
+    wkt_text = ""
+    try:
+        wkt_text = str(crs_obj.to_wkt()).lower()
+    except Exception:
+        wkt_text = ""
+    if ("hong kong 1980 grid system" in crs_text) or ("hong kong 1980 grid system" in wkt_text):
+        # Canonical CRS for Hong Kong 1980 Grid System (meters): EPSG:2326
+        return CRS.from_epsg(2326)
+    return crs_obj
+
+
+def build_lumid_colormap(
+    style_entries: List[tuple[int, str, str, str, tuple[int, int, int]]],
+) -> Dict[int, tuple[int, int, int, int]]:
     colormap: Dict[int, tuple[int, int, int, int]] = {idx: (0, 0, 0, 0) for idx in range(256)}
-    for value, _, _, _, (r, g, b) in LUM_ID_STYLE:
+    for value, _, _, _, (r, g, b) in style_entries:
         colormap[int(value)] = (int(r), int(g), int(b), 255)
     return colormap
 
@@ -114,13 +158,18 @@ def _write_confidence_raster(out_path: Path, confidence: np.ndarray, profile: Di
         )
 
 
-def _maybe_write_sidecars(raster_path: Path, write_sidecars: bool, overwrite: bool) -> None:
+def _maybe_write_sidecars(
+    raster_path: Path,
+    write_sidecars: bool,
+    overwrite: bool,
+    style_entries: List[tuple[int, str, str, str, tuple[int, int, int]]],
+) -> None:
     if not write_sidecars:
         return
     qml_path = raster_path.with_suffix(".qml")
     clr_path = raster_path.with_suffix(".clr")
     if overwrite or (not qml_path.exists()) or (not clr_path.exists()):
-        write_style_sidecars_for_raster(raster_path)
+        write_style_sidecars_for_raster(raster_path, style_entries=style_entries)
 
 
 def _map_pred_class_to_lumid(
@@ -161,10 +210,12 @@ def export_one_prediction(
     ignore_index: int,
     class_lum_ids: List[int],
     ignore_lum_ids: List[int],
+    style_entries: List[tuple[int, str, str, str, tuple[int, int, int]]],
 ) -> Dict[str, Any]:
     with rasterio.open(label_path) as label_src:
         label_arr = label_src.read(1)
         base_profile = label_src.profile.copy()
+        base_profile["crs"] = normalize_crs_for_qgis(base_profile.get("crs"))
 
     pred_lumid_all = _map_pred_class_to_lumid(
         pred_class_map=pred_class_map,
@@ -223,7 +274,12 @@ def export_one_prediction(
                 f"active_lum_ids=[{active_lum_text}] ignored_lum_ids=[{ignored_lum_text}]"
             ),
         )
-        _maybe_write_sidecars(masked_path, write_sidecars=write_sidecars, overwrite=overwrite)
+        _maybe_write_sidecars(
+            masked_path,
+            write_sidecars=write_sidecars,
+            overwrite=overwrite,
+            style_entries=style_entries,
+        )
         masked_written = 1
 
     if overwrite or (not all_pixels_path.exists()):
@@ -238,7 +294,12 @@ def export_one_prediction(
                 f"ignored_lum_ids=[{ignored_lum_text}] {ignore_index}=unknown"
             ),
         )
-        _maybe_write_sidecars(all_pixels_path, write_sidecars=write_sidecars, overwrite=overwrite)
+        _maybe_write_sidecars(
+            all_pixels_path,
+            write_sidecars=write_sidecars,
+            overwrite=overwrite,
+            style_entries=style_entries,
+        )
         all_pixels_written = 1
 
     if overwrite or (not confidence_path.exists()):
@@ -265,6 +326,8 @@ def main() -> None:
     num_classes = len(class_lum_ids)
     ignore_lum_ids = [int(x) for x in data_cfg.get("ignore_lum_ids", [])]
     ignore_index = int(data_cfg.get("ignore_index", 255))
+    style_profile = resolve_style_profile(data_cfg, class_lum_ids=class_lum_ids, ignore_lum_ids=ignore_lum_ids)
+    style_entries = resolve_style_entries(style_profile)
 
     run_paths = get_run_paths(cfg, config_path)
     ensure_run_dirs(run_paths)
@@ -278,6 +341,7 @@ def main() -> None:
         ignore_lum_ids,
         ignore_index,
     )
+    logger.info("Color style profile: %s", style_profile)
 
     checkpoint_path = resolve_project_path(args.checkpoint, config_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -291,7 +355,7 @@ def main() -> None:
     manifest_path = resolve_project_path(data_cfg["manifest_path"], config_path)
     manifest_df = read_manifest(manifest_path)
 
-    colormap = build_lumid_colormap()
+    colormap = build_lumid_colormap(style_entries=style_entries)
     pred_root = run_paths["run_dir"] / "predictions"
     pred_root.mkdir(parents=True, exist_ok=True)
 
@@ -387,6 +451,7 @@ def main() -> None:
                     ignore_index=ignore_index,
                     class_lum_ids=class_lum_ids,
                     ignore_lum_ids=ignore_lum_ids,
+                    style_entries=style_entries,
                 )
 
                 total += 1

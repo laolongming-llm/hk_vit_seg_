@@ -1,0 +1,12 @@
+# Export tiles for no-split full-coverage inference dataset
+
+tiles_manifest: "data/processed/vit_dataset/v2_11block7_inference_full_nosplit/manifests/tiles_manifest.csv"
+manifests_dir: "data/processed/vit_dataset/v2_11block7_inference_full_nosplit/manifests"
+output_root: "data/processed/vit_dataset/v2_11block7_inference_full_nosplit"
+
+imagery_11block: "data/interim/imagery_1m_aligned/tdop_11block_1m_aligned.tif"
+label_11block: "data/interim/labels_1m_aligned/lumid_11block_1m_aligned_v2_strict7.tif"
+
+copy_manifests: true
+progress_every: 100
+progress_seconds: 8.0

@@ -1,0 +1,20 @@
+# baseline_v5 导出专用配置（尽量覆盖当前数据集可用区域）
+# 用途：
+# 1) 复用 seed42 训练配置与权重定义；
+# 2) 将 manifest 切换为非 balanced 清单（唯一 tile）；
+# 3) 将导出结果写入独立 run_subdir，避免与训练目录混杂。
+
+base_config: "configs/baseline_v5/train_vit_seg_baseline_v5_single.yaml"
+
+experiment:
+  run_name: "baseline_v5_export_fullcoverage_seed42"
+  seed: 42
+
+data:
+  manifest_path: "data/processed/vit_dataset/v2_11block7/manifests/tiles_manifest.csv"
+
+evaluation:
+  splits_to_eval: ["train", "val", "test"]
+
+output:
+  run_subdir: "baseline_v5_export_fullcoverage_seed42"

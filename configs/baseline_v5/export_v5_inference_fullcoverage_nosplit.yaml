@@ -1,0 +1,18 @@
+# baseline_v5 export config for strict full-coverage inference (no-split gaps)
+
+base_config: "configs/baseline_v5/train_vit_seg_baseline_v5_single.yaml"
+
+experiment:
+  run_name: "baseline_v5_export_inference_fullcoverage_nosplit_seed42"
+  seed: 42
+
+data:
+  dataset_root: "data/processed/vit_dataset/v2_11block7_inference_full_nosplit"
+  manifest_path: "data/processed/vit_dataset/v2_11block7_inference_full_nosplit/manifests/tiles_manifest.csv"
+  label_style_profile: "strict7"
+
+evaluation:
+  splits_to_eval: ["train", "val", "test"]
+
+output:
+  run_subdir: "baseline_v5_export_inference_fullcoverage_nosplit_seed42"
