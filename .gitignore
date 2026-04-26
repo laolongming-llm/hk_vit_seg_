@@ -211,6 +211,7 @@ data/
 processed/
 outputs/
 qgis/
+docs/
 
 ## Temporary files and local logs
 tmp/
