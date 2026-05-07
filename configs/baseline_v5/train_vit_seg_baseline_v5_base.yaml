@@ -69,7 +69,7 @@ model:
   unfreeze_backbone_norm: true
 
 train:
-  max_epochs: 30
+  max_epochs: 40
   amp: true
   grad_clip_norm: 1.0
   grad_accum_steps: 2
